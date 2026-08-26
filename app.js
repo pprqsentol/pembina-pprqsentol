@@ -11,6 +11,57 @@ const SUPABASE_KEY = 'sb_publishable_BTFxSTrt1vM1seoQaXG_7g_mqYo5aqq';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+/* ====== PASANG APLIKASI (PWA) ======
+   Chrome/Edge di Android baru menawarkan pasang otomatis setelah kriteria
+   & "skor keterlibatan" browser terpenuhi (kadang butuh beberapa kali
+   kunjungan), jadi tombol "Pasang Aplikasi" ini dipasang manual supaya
+   pengguna bisa memasang kapan saja tanpa menunggu itu. iOS Safari malah
+   sama sekali tidak punya prompt otomatis -- di sana harus lewat menu
+   Bagikan, jadi tombolnya diarahkan ke instruksi manual. */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e)=>{
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = '');
+});
+window.addEventListener('appinstalled', ()=>{
+  deferredInstallPrompt = null;
+  document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = 'none');
+});
+function isRunningAsInstalledPwa(){
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+function isIos(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent);
+}
+async function installApp(){
+  if(deferredInstallPrompt){
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = 'none');
+    return;
+  }
+  if(isIos()){
+    alert('Cara pasang di iPhone/iPad:\n1. Ketuk ikon Bagikan (kotak dengan panah ke atas) di Safari.\n2. Pilih "Tambah ke Layar Utama".\n\nCatatan: harus dibuka lewat Safari, bukan Chrome, supaya opsi ini muncul.');
+    return;
+  }
+  alert('Kalau tombol "Pasang" tidak muncul sendiri: buka menu titik tiga di pojok browser lalu pilih "Instal aplikasi" / "Tambahkan ke layar utama". Pastikan juga aplikasi dibuka lewat alamat HTTPS.');
+}
+/* Kalau sudah terpasang (dibuka sebagai app, bukan tab browser), sembunyikan
+   tombol pasang -- tidak relevan lagi. */
+if(isRunningAsInstalledPwa()){
+  document.addEventListener('DOMContentLoaded', ()=>{
+    document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = 'none');
+  });
+} else if(isIos()){
+  /* iOS tidak pernah memicu beforeinstallprompt, jadi tombolnya
+     ditampilkan dari awal supaya pengguna iPhone tetap dapat instruksi. */
+  document.addEventListener('DOMContentLoaded', ()=>{
+    document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = '');
+  });
+}
+
 /* Mengubah karakter khusus HTML (<, >, &, ", ') jadi bentuk aman sebelum
    ditampilkan, supaya teks bebas-ketik dari pengguna lain (mis. nama santri
    yang diisi admin_pusat) tidak bisa dieksekusi sebagai kode HTML/JS saat
@@ -380,6 +431,23 @@ function openAbsensiScanner(){
     alert('Fitur scan QR belum siap dimuat. Pastikan HP terhubung internet lalu coba lagi.');
     return;
   }
+  /* Kamera HP (beda dengan webcam laptop yang biasanya dites dari
+     localhost) hanya bisa diakses browser lewat halaman yang aman
+     (HTTPS), atau lewat "localhost". Kalau app dibuka lewat alamat IP
+     polos (http://192.168.x.x, dsb) di HP, browser diam-diam menolak
+     izin kamera -- ini penyebab paling sering "jalan di laptop, mati
+     di HP". Dicek & dikasih pesan jelas di sini sebelum coba nyalakan
+     kamera. */
+  const host = location.hostname;
+  const isSecure = location.protocol === 'https:' || host === 'localhost' || host === '127.0.0.1';
+  if(!isSecure){
+    alert('Kamera tidak bisa diakses karena halaman ini dibuka lewat alamat yang tidak aman (' + location.protocol + '//' + host + '). Buka aplikasi ini lewat alamat HTTPS supaya kamera bisa dipakai di HP.');
+    return;
+  }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    alert('Browser di HP ini tidak mendukung akses kamera lewat web. Coba pakai Chrome/Safari versi terbaru.');
+    return;
+  }
   absTorchOn = false;
   showModal('Scan Kartu Santri', `
     <p class="muted" id="scanInfo">Arahkan kamera ke QR code di kartu santri.</p>
@@ -394,14 +462,9 @@ function openAbsensiScanner(){
   absScanner = new Html5Qrcode('qrReaderAbsensi');
   absScanFocusTimer = null;
   absScanner.start(
-    {
-      facingMode: 'environment',
-      /* Minta resolusi yang cukup tinggi -- resolusi default kamera kadang
-         terlalu rendah untuk membaca QR kecil di kartu santri, ini yang
-         paling sering bikin kamera "hidup" tapi tidak pernah berhasil
-         membaca (cuma berkedip-kedip nyari fokus). */
-      width: { ideal: 1280 }, height: { ideal: 720 }
-    },
+    /* cameraIdOrConfig -- HARUS persis 1 key, tidak boleh dicampur dengan
+       resolusi. Resolusi ditaruh di videoConstraints pada parameter kedua. */
+    { facingMode: 'environment' },
     {
       fps: 10,
       qrbox: function(viewfinderWidth, viewfinderHeight){
@@ -411,6 +474,12 @@ function openAbsensiScanner(){
       },
       aspectRatio: 1.0,
       disableFlip: false,
+      /* Minta resolusi yang cukup tinggi -- resolusi default kamera kadang
+         terlalu rendah untuk membaca QR kecil di kartu santri. */
+      videoConstraints: {
+        facingMode: 'environment',
+        width: { ideal: 1280 }, height: { ideal: 720 }
+      },
       /* Manfaatkan BarcodeDetector bawaan browser kalau tersedia (Chrome/
          WebView Android) -- jauh lebih cepat & akurat dibanding pembaca
          QR berbasis JS murni, dan sering jadi penyebab kamera cuma
@@ -442,7 +511,22 @@ function openAbsensiScanner(){
     if(box) box.onclick = applyAbsensiFocus;
   }).catch(err=>{
     const info = document.getElementById('scanInfo');
-    if(info) info.textContent = 'Tidak bisa mengakses kamera: ' + err;
+    const fb = document.getElementById('scanFeedback');
+    const name = (err && (err.name || err)) + '';
+    let pesan;
+    if(name.includes('NotAllowedError') || name.includes('PermissionDenied')){
+      pesan = 'Izin kamera ditolak. Buka pengaturan situs di browser HP, izinkan Kamera untuk aplikasi ini, lalu coba lagi.';
+    } else if(name.includes('NotFoundError') || name.includes('OverconstrainedError')){
+      pesan = 'Kamera belakang tidak ditemukan di perangkat ini.';
+    } else if(name.includes('NotReadableError')){
+      pesan = 'Kamera sedang dipakai aplikasi lain. Tutup aplikasi/tab lain yang memakai kamera lalu coba lagi.';
+    } else if(name.includes('SecurityError')){
+      pesan = 'Akses kamera diblokir karena halaman tidak dibuka lewat HTTPS.';
+    } else {
+      pesan = 'Tidak bisa mengakses kamera (' + name + ').';
+    }
+    if(info) info.textContent = pesan;
+    if(fb){ fb.className = 'scan-feedback err'; fb.textContent = pesan; }
   });
 }
 async function applyAbsensiFocus(){

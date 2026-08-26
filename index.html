@@ -25,6 +25,7 @@
     <input id="loginPassword" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()" style="width:100%;padding:12px;border-radius:8px;border:1px solid var(--border);font-size:16px;box-sizing:border-box;">
     <p id="loginError" class="muted" style="color:var(--danger);display:none;margin-top:8px"></p>
     <button class="btn-primary" id="btnMasuk" onclick="doLogin()">Masuk</button>
+    <button class="btn" id="btnInstallApp" style="display:none;width:100%;margin-top:10px" onclick="installApp()">&#8681; Pasang Aplikasi ke Layar Utama</button>
   </div>
 </div>
 
@@ -35,6 +36,7 @@
       <div class="topbar-title">Aplikasi Pembina</div>
       <div class="topbar-sub" id="userLabel"></div>
     </div>
+    <button class="icon-btn" id="btnInstallAppTop" style="display:none" onclick="installApp()" title="Pasang Aplikasi"><i>&#8681;</i></button>
     <button class="icon-btn" onclick="logout()" title="Keluar"><i>&#8631;</i></button>
   </header>
 
