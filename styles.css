@@ -1,7 +1,7 @@
 :root{
   --green-900:#1f3327; --green-700:#2f4d3a; --green-600:#3b5940; --green-100:#e4ece3;
   --bg:#f4f5f0; --card:#ffffff; --border:#dcded6; --text:#232821; --muted:#6b7268;
-  --danger:#a33; --radius:12px;
+  --danger:#a33; --radius:12px; --topbar-h:54px;
 }
 *{box-sizing:border-box;}
 body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
@@ -26,12 +26,15 @@ button{cursor:pointer;font-family:inherit;}
 .topbar-sub{font-size:12px;color:var(--muted);}
 .icon-btn{margin-left:auto;background:none;border:none;font-size:20px;color:var(--muted);padding:6px;}
 
-.layout{display:flex;min-height:calc(100vh - 53px);}
+.layout{display:flex;min-height:calc(100vh - var(--topbar-h, 53px));}
 .sidebar{display:none;}
 .content{flex:1;padding:14px;padding-bottom:80px;max-width:960px;margin:0 auto;width:100%;}
 
-/* Bottom nav (mobile) */
-.bottomnav{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);display:flex;z-index:10;}
+/* Bottom nav (mobile). position:fixed ke viewport supaya diam di tempat --
+   tidak ikut bergeser saat konten di atasnya di-scroll. translateZ dipakai
+   supaya browser (terutama iOS Safari) tidak "menggeser" nav ini sesaat
+   saat momentum-scroll. */
+.bottomnav{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);display:flex;z-index:10;transform:translateZ(0);}
 .bottomnav .navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px;background:none;border:none;color:var(--muted);font-size:10px;}
 .bottomnav .navitem.active{color:var(--green-600);}
 .bottomnav .navitem .ic{font-size:18px;}
@@ -44,6 +47,75 @@ button{cursor:pointer;font-family:inherit;}
   .sidebar .navitem.active{background:var(--green-100);color:var(--green-700);font-weight:600;}
   .content{padding:20px;}
 }
+
+/* Page head: judul tab (+ isian di dalamnya seperti filter/periode) tetap
+   diam di atas saat konten di bawahnya di-scroll. Nempel persis di bawah topbar. */
+.page-head{
+  position:sticky;
+  top:var(--topbar-h);
+  z-index:8;
+  background:var(--bg);
+  margin:-14px -14px 12px;
+  padding:12px 14px 12px;
+  border-bottom:1px solid var(--border);
+  box-shadow:0 3px 8px rgba(31,51,39,0.05);
+}
+@media (min-width:800px){
+  .page-head{ margin:-20px -20px 14px; padding:16px 20px 14px; }
+}
+.page-head h2{margin-bottom:2px;}
+.page-head-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;}
+.page-head .tabs{margin:10px 0 0;}
+.page-head .card{margin:10px 0 0;}
+
+/* Mode landscape (HP dimiringkan, tinggi layar sempit): topbar & page-head
+   dulunya bertumpuk atas-bawah dan jadi kebesaran sampai menutup daftar di
+   bawahnya. Di sini keduanya dibikin lebih ringkas, judul & isinya dijejer
+   kiri-kanan (bukan atas-bawah lagi), dan page-head dikasih batas tinggi
+   + scroll sendiri supaya walau isinya panjang, tetap tidak pernah menutup
+   konten di bawahnya. */
+@media (orientation:landscape) and (max-height:500px){
+  .topbar{padding:6px 14px;gap:8px;}
+  .topbar-logo{width:24px;height:24px;}
+  .topbar > div{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;}
+  .topbar-title{font-size:13px;}
+  .topbar-sub{font-size:11px;}
+
+  .page-head{
+    display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;
+    padding:8px 14px;margin:-14px -14px 8px;
+    max-height:46vh;overflow-y:auto;
+  }
+  .page-head h2{font-size:14px;margin:2px 0;flex:0 0 auto;}
+  .page-head .card,.page-head .filter-bar{flex:1 1 260px;min-width:220px;margin:0;padding:8px 10px;}
+  .page-head .tabs{flex-basis:100%;margin:6px 0 0;}
+
+  .bottomnav .navitem{padding:5px 2px;gap:1px;font-size:9px;}
+  .bottomnav .navitem .ic{font-size:15px;}
+}
+
+/* Filter bar: pencarian nama santri + filter program, dipakai di tab Hafalan
+   supaya gampang cari santri walau daftarnya panjang. */
+.filter-bar{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:flex-end;
+  background:var(--green-100);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:9px 10px;
+  margin-top:10px;
+}
+.filter-bar .filter-date{display:flex;flex-direction:column;gap:3px;flex:1 1 120px;min-width:120px;}
+.filter-bar .filter-date label{margin:0;font-size:11px;color:var(--green-700);font-weight:700;text-transform:uppercase;letter-spacing:.2px;}
+.filter-bar .filter-date input{padding:7px 8px;font-size:13px;border-color:var(--border);background:#fff;}
+.filter-bar .filter-search{flex:2 1 180px;min-width:160px;position:relative;}
+.filter-bar .filter-search input{padding:8px 10px 8px 30px;font-size:13px;background:#fff;}
+.filter-bar .filter-search::before{content:"\1F50D";position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:12px;opacity:.6;pointer-events:none;}
+.filter-bar select{width:auto;flex:1 1 132px;min-width:132px;padding:8px;font-size:13px;background:#fff;}
+.filter-bar .btn{flex:0 0 auto;white-space:nowrap;}
+.filter-count{font-size:12px;color:var(--muted);margin:8px 2px 0;}
 
 /* Cards / generic UI */
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:12px;}
@@ -76,8 +148,8 @@ label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;}
 
 .chip-group{display:flex;flex-wrap:wrap;gap:6px;}
 
-.tabs{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;}
-.tab{padding:7px 14px;border-radius:20px;border:1px solid var(--border);background:#fff;font-size:13px;white-space:nowrap;}
+.tabs{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;}
+.tab{padding:7px 14px;border-radius:20px;border:1px solid var(--border);background:#fff;font-size:13px;white-space:nowrap;flex-shrink:0;}
 .tab.active{background:var(--green-600);color:#fff;border-color:var(--green-600);}
 
 /* Judul seksi menonjol (mis. Riwayat Keuangan / Riwayat Hafalan / Daftar Tidak Hadir) */
@@ -92,6 +164,20 @@ label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--border);}
 th{color:var(--muted);font-weight:600;font-size:12px;}
+
+/* Riwayat: daftar entri hafalan & absensi ditampilkan sebagai baris ringkas
+   dengan badge berwarna, lebih gampang dibaca dibanding tabel polos. */
+.riwayat-item{display:flex;align-items:center;gap:10px;padding:10px 6px;border-bottom:1px solid var(--border);}
+.riwayat-item:last-child{border-bottom:none;}
+.riwayat-item .ri-main{flex:1;min-width:0;}
+.riwayat-item .ri-title{font-size:13.5px;font-weight:600;}
+.riwayat-item .ri-sub{font-size:12px;color:var(--muted);margin-top:1px;}
+.riwayat-item .ri-right{text-align:right;font-size:12.5px;font-weight:700;white-space:nowrap;}
+.riwayat-badge{display:inline-flex;align-items:center;justify-content:center;min-width:40px;padding:5px 10px;border-radius:20px;font-size:12px;font-weight:700;flex-shrink:0;}
+.riwayat-badge.juz{background:var(--green-100);color:var(--green-700);}
+.riwayat-badge.h{background:#2f7d4f;color:#fff;}
+.riwayat-badge.a{background:#c0392b;color:#fff;}
+.riwayat-badge.i{background:#d19a24;color:#fff;}
 
 /* Modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;z-index:100;}

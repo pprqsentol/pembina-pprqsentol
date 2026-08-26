@@ -250,6 +250,19 @@ async function logout() {
   document.getElementById('app').style.display='none';
   document.getElementById('loginScreen').style.display='flex';
 }
+/* Ukur tinggi topbar sebenarnya lalu simpan ke CSS variable --topbar-h,
+   supaya .page-head (judul tab yang stuck) selalu nempel persis di
+   bawahnya, di layar berapa pun ukurannya. */
+function syncTopbarHeight(){
+  const tb = document.querySelector('.topbar');
+  if(tb) document.documentElement.style.setProperty('--topbar-h', tb.offsetHeight + 'px');
+}
+window.addEventListener('resize', syncTopbarHeight);
+/* orientationchange kadang tidak diikuti resize tepat waktu di sebagian
+   browser HP, jadi disinkron ulang sesaat setelah rotasi selesai supaya
+   --topbar-h (dan tinggi page-head yang menempel di bawahnya) selalu akurat. */
+window.addEventListener('orientationchange', ()=> setTimeout(syncTopbarHeight, 300));
+
 function enterApp(){
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('app').style.display='block';
@@ -267,6 +280,7 @@ function enterApp(){
   renderNav();
   const nav = navForSession();
   goPage(nav.some(i=>i.id===currentPage) ? currentPage : nav[0].id);
+  syncTopbarHeight();
 }
 
 /* ---------- NAV ---------- */
@@ -296,6 +310,12 @@ function visibleSantriForKegiatan(kegiatanId){
 function initial(name){ return (name||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function val(id){ return document.getElementById(id).value; }
+/* Format tanggal singkat ala Indonesia untuk daftar Riwayat, mis. "12 Agt 2026". */
+function fmtTglIndo(t){
+  if(!t) return '-';
+  const d = new Date(t);
+  return d.toLocaleDateString('id-ID', {day:'2-digit', month:'short', year:'numeric'});
+}
 
 /* ---------- ABSENSI ---------- */
 let absKegiatanId = null, absTanggal = todayStr();
@@ -304,17 +324,19 @@ function renderAbsensiPage(){
   const santri = visibleSantriForKegiatan(absKegiatanId);
   const kegAktif = DB.kegiatan.find(k=>k.id===absKegiatanId);
   document.getElementById('content').innerHTML = `
-    <h2>Absensi</h2>
-    <div class="card">
-      <label>Kegiatan</label>
-      <select onchange="absKegiatanId=this.value; renderAbsensiPage()">
-        ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}</option>`).join('')}
-      </select>
-      <label>Tanggal</label>
-      <input type="date" value="${absTanggal}" onchange="absTanggal=this.value; renderAbsensiPage()">
-      ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
-      <div class="btn-row" style="margin-top:8px">
-        <button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>
+    <div class="page-head">
+      <h2>Absensi</h2>
+      <div class="card">
+        <label>Kegiatan</label>
+        <select onchange="absKegiatanId=this.value; renderAbsensiPage()">
+          ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}</option>`).join('')}
+        </select>
+        <label>Tanggal</label>
+        <input type="date" value="${absTanggal}" onchange="absTanggal=this.value; renderAbsensiPage()">
+        ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>
+        </div>
       </div>
     </div>
     <div class="card">
@@ -350,6 +372,7 @@ let absScanner = null;
 let absScanBusy = false;
 let absLastScan = { text: '', time: 0 };
 let absTorchOn = false;
+let absScanFocusTimer = null;
 
 function openAbsensiScanner(){
   if(!absKegiatanId){ alert('Pilih kegiatan terlebih dahulu.'); return; }
@@ -369,24 +392,43 @@ function openAbsensiScanner(){
   `, 'closeAbsensiScanner()');
 
   absScanner = new Html5Qrcode('qrReaderAbsensi');
+  absScanFocusTimer = null;
   absScanner.start(
-    { facingMode: 'environment' },
+    {
+      facingMode: 'environment',
+      /* Minta resolusi yang cukup tinggi -- resolusi default kamera kadang
+         terlalu rendah untuk membaca QR kecil di kartu santri, ini yang
+         paling sering bikin kamera "hidup" tapi tidak pernah berhasil
+         membaca (cuma berkedip-kedip nyari fokus). */
+      width: { ideal: 1280 }, height: { ideal: 720 }
+    },
     {
       fps: 10,
       qrbox: function(viewfinderWidth, viewfinderHeight){
         const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-        const size = Math.max(150, Math.floor(minEdge * 0.7));
+        const size = Math.max(220, Math.floor(minEdge * 0.75));
         return { width: size, height: size };
-      }
+      },
+      aspectRatio: 1.0,
+      disableFlip: false,
+      /* Manfaatkan BarcodeDetector bawaan browser kalau tersedia (Chrome/
+         WebView Android) -- jauh lebih cepat & akurat dibanding pembaca
+         QR berbasis JS murni, dan sering jadi penyebab kamera cuma
+         "berkedip" tanpa pernah berhasil membaca di HP tertentu. */
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
     },
     onAbsensiScanSuccess,
     function(){ /* frame tanpa QR terbaca, abaikan */ }
   ).then(async ()=>{
     const info = document.getElementById('scanInfo');
-    if(info) info.textContent = 'Arahkan kamera ke QR code di kartu santri.';
+    if(info) info.textContent = 'Arahkan kamera ke QR code di kartu santri. Ketuk video kalau gambar buram.';
     const fb = document.getElementById('scanFeedback');
     if(fb){ fb.className = 'scan-feedback'; fb.textContent = 'Siap memindai.'; }
-    try{ await absScanner.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }); }catch(e){}
+    await applyAbsensiFocus();
+    /* Sebagian HP melepas mode fokus kontinu setelah beberapa saat,
+       jadi dicoba diterapkan ulang tiap 2 detik supaya kamera tidak
+       balik buram. */
+    absScanFocusTimer = setInterval(applyAbsensiFocus, 2000);
     try{
       const settings = absScanner.getRunningTrackSettings();
       if(settings && ('torch' in settings)){
@@ -394,10 +436,18 @@ function openAbsensiScanner(){
         if(btn) btn.style.display = '';
       }
     }catch(e){}
+    /* Tap-to-focus: sentuh area video untuk memaksa kamera fokus ulang,
+       berguna kalau perangkat tidak mendukung fokus kontinu otomatis. */
+    const box = document.getElementById('qrReaderAbsensi');
+    if(box) box.onclick = applyAbsensiFocus;
   }).catch(err=>{
     const info = document.getElementById('scanInfo');
     if(info) info.textContent = 'Tidak bisa mengakses kamera: ' + err;
   });
+}
+async function applyAbsensiFocus(){
+  if(!absScanner) return;
+  try{ await absScanner.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }); }catch(e){}
 }
 
 function onAbsensiScanSuccess(decodedText){
@@ -457,6 +507,7 @@ async function toggleTorch(){
 }
 
 function closeAbsensiScanner(){
+  if(absScanFocusTimer){ clearInterval(absScanFocusTimer); absScanFocusTimer = null; }
   const finish = ()=>{
     absScanner = null;
     absTorchOn = false;
@@ -475,12 +526,44 @@ function closeAbsensiScanner(){
 }
 
 /* ---------- HAFALAN ---------- */
+let hafalanSearchQuery = '';
+let hafalanProgramFilter = 'semua'; // 'semua' | 'Takhossus' | 'Non-Takhossus'
+function filteredHafalanSantri(){
+  const q = hafalanSearchQuery.trim().toLowerCase();
+  return visibleSantri().filter(s=>{
+    if(hafalanProgramFilter!=='semua' && s.program!==hafalanProgramFilter) return false;
+    if(!q) return true;
+    return s.nama.toLowerCase().includes(q) || (s.noInduk||'').toLowerCase().includes(q);
+  });
+}
 function renderHafalanPage(){
-  const santri = visibleSantri();
   document.getElementById('content').innerHTML = `
-    <h2>Hafalan</h2>
+    <div class="page-head">
+      <h2>Hafalan</h2>
+      <div class="filter-bar">
+        <div class="filter-search">
+          <input type="text" id="hafalanSearchInput" placeholder="Cari nama atau no. induk santri..." value="${escapeHtml(hafalanSearchQuery)}" oninput="hafalanSearchQuery=this.value; renderHafalanListBody()">
+        </div>
+        <select onchange="hafalanProgramFilter=this.value; renderHafalanListBody()">
+          <option value="semua" ${hafalanProgramFilter==='semua'?'selected':''}>Semua Program</option>
+          <option value="Takhossus" ${hafalanProgramFilter==='Takhossus'?'selected':''}>Takhossus</option>
+          <option value="Non-Takhossus" ${hafalanProgramFilter==='Non-Takhossus'?'selected':''}>Non-Takhossus</option>
+        </select>
+      </div>
+    </div>
+    <div id="hafalanListBody"></div>
+  `;
+  renderHafalanListBody();
+}
+function renderHafalanListBody(){
+  const all = visibleSantri();
+  const santri = filteredHafalanSantri();
+  const body = document.getElementById('hafalanListBody');
+  if(!body) return;
+  body.innerHTML = `
+    ${(hafalanSearchQuery.trim() || hafalanProgramFilter!=='semua') ? `<p class="filter-count">Menampilkan ${santri.length} dari ${all.length} santri</p>` : ''}
     <div class="card">
-      ${santri.length===0?'<p class="muted">Belum ada santri di program ini.</p>':santri.map(s=>{
+      ${all.length===0 ? '<p class="muted">Belum ada data santri.</p>' : santri.length===0 ? '<p class="muted">Tidak ada santri yang cocok dengan pencarian/filter.</p>' : santri.map(s=>{
         const t = totalHafalanSantri(s.id);
         return `<div class="list-item">
           <div class="avatar">${escapeHtml(initial(s.nama))}</div>
@@ -555,14 +638,16 @@ function renderRiwayatPage(){
   const santri = visibleSantri();
   if(!riwayatSantriId || !santri.some(s=>s.id===riwayatSantriId)) riwayatSantriId = santri[0]?.id || null;
   document.getElementById('content').innerHTML = `
-    <h2>Riwayat</h2>
-    <div class="card">
-      <label>Santri</label>
-      <select onchange="riwayatSantriId=this.value; renderRiwayatBody()">
-        ${santri.map(s=>`<option value="${s.id}" ${s.id===riwayatSantriId?'selected':''}>${escapeHtml(s.nama)}</option>`).join('')}
-      </select>
-      <div class="tabs" style="margin-top:10px">
-        ${['hari','pekan','bulan','tahun'].map(p=>`<button class="tab ${p===riwayatPeriode?'active':''}" onclick="riwayatPeriode='${p}'; renderRiwayatBody()">${p.charAt(0).toUpperCase()+p.slice(1)}</button>`).join('')}
+    <div class="page-head">
+      <h2>Riwayat</h2>
+      <div class="card">
+        <label>Santri</label>
+        <select onchange="riwayatSantriId=this.value; renderRiwayatBody()">
+          ${santri.map(s=>`<option value="${s.id}" ${s.id===riwayatSantriId?'selected':''}>${escapeHtml(s.nama)}</option>`).join('')}
+        </select>
+        <div class="tabs" style="margin-top:10px">
+          ${['hari','pekan','bulan','tahun'].map(p=>`<button class="tab ${p===riwayatPeriode?'active':''}" onclick="riwayatPeriode='${p}'; renderRiwayatBody()">${p.charAt(0).toUpperCase()+p.slice(1)}</button>`).join('')}
+        </div>
       </div>
     </div>
     <div id="riwayatBody"></div>
@@ -579,11 +664,12 @@ function renderRiwayatBody(){
   const statusLabel = {h:'Hadir', a:'Alpha', i:'Izin'};
   const namaKegiatan = kid => (DB.kegiatan.find(k=>k.id===kid)||{}).nama || '-';
   const totalPeriode = hafalan.reduce((sum,h)=>sum+(h.jumlahHalaman||1),0);
+  const hadirPeriode = absensi.filter(a=>a.status==='h').length;
   const t = totalHafalanSantri(santriId);
   const nh = nilaiHafalanSantri(santriId, from, to);
   const na = nilaiAbsensiSantri(santriId, from, to);
   document.getElementById('riwayatBody').innerHTML = `
-    <p class="muted">Periode: ${from} s.d. ${to}</p>
+    <p class="muted">Periode: ${fmtTglIndo(from)} s.d. ${fmtTglIndo(to)}</p>
 
     <div class="section-heading">Penilaian (periode ini)</div>
     <div class="grid2">
@@ -599,27 +685,57 @@ function renderRiwayatBody(){
       </div>
     </div>
 
-    <div class="section-heading">Riwayat Hafalan (ditambahkan pada periode ini: ${totalPeriode} halaman)</div>
-    <div class="highlight-box">
-      <div class="hb-label">Total hafalan keseluruhan</div>
-      <div class="hb-value">${t.juz} JUZ ${t.halaman} HALAMAN</div>
+    <div class="section-heading">Riwayat Hafalan</div>
+    <div class="grid2">
+      <div class="highlight-box">
+        <div class="hb-label">Total hafalan keseluruhan</div>
+        <div class="hb-value">${t.juz} JUZ ${t.halaman} HAL.</div>
+      </div>
+      <div class="highlight-box">
+        <div class="hb-label">Sedang dihafal</div>
+        <div class="hb-value" style="font-size:14px">${formatJuzSekarang(santriId).toUpperCase()}</div>
+      </div>
     </div>
-    <div class="highlight-box">
-      <div class="hb-label">Sedang dihafal</div>
-      <div class="hb-value">${formatJuzSekarang(santriId).toUpperCase()}</div>
+    <div class="card">
+      <div class="card-title">Tren hafalan bertambah (kumulatif periode ini) &middot; +${totalPeriode} halaman</div>
+      <canvas id="chartSantriHafalan" width="600" height="180" style="width:100%;height:150px"></canvas>
     </div>
-    <canvas id="chartSantriHafalan" width="600" height="180" style="width:100%;height:150px;margin-top:8px"></canvas>
-    ${hafalan.length===0?'<p class="muted">Belum ada hafalan dicatat pada periode ini.</p>':`
-      <table><tr><th>Tanggal</th><th>Juz</th><th>Halaman</th></tr>
-      ${hafalan.map(h=>`<tr><td>${h.tanggal}</td><td>${h.juz}</td><td>${h.halamanDari===h.halamanSampai?h.halamanDari:h.halamanDari+'-'+h.halamanSampai}</td></tr>`).join('')}
-      </table>`}
+    <div class="card" style="padding:2px 10px">
+      ${hafalan.length===0?'<p class="muted" style="padding:10px 4px">Belum ada hafalan dicatat pada periode ini.</p>':
+        hafalan.map(h=>{
+          const halText = h.halamanDari===h.halamanSampai ? ('Halaman '+h.halamanDari) : ('Halaman '+h.halamanDari+'&ndash;'+h.halamanSampai);
+          return `<div class="riwayat-item">
+            <span class="riwayat-badge juz">Juz ${h.juz}</span>
+            <div class="ri-main">
+              <div class="ri-title">${halText}</div>
+              <div class="ri-sub">${fmtTglIndo(h.tanggal)}</div>
+            </div>
+            <div class="ri-right" style="color:var(--green-700)">+${h.jumlahHalaman||1} hal.</div>
+          </div>`;
+        }).join('')}
+    </div>
 
-    <div class="section-heading">Riwayat Absensi (periode ini)</div>
-    <canvas id="chartSantriAbsensi" width="600" height="180" style="width:100%;height:150px"></canvas>
-    ${absensi.length===0?'<p class="muted">Belum ada absensi dicatat pada periode ini.</p>':`
-      <table><tr><th>Tanggal</th><th>Kegiatan</th><th>Status</th></tr>
-      ${absensi.map(a=>`<tr><td>${a.tanggal}</td><td>${namaKegiatan(a.kegiatanId)}</td><td>${statusLabel[a.status]||a.status}</td></tr>`).join('')}
-      </table>`}
+    <div class="section-heading">Riwayat Absensi (hadir ${hadirPeriode} dari ${absensi.length} tercatat)</div>
+    <div class="card">
+      <div class="card-title">Persentase kehadiran per kegiatan (periode ini)</div>
+      <canvas id="chartSantriAbsensi" width="600" height="180" style="width:100%;height:150px"></canvas>
+    </div>
+    <div class="card" style="padding:2px 10px">
+      ${absensi.length===0?'<p class="muted" style="padding:10px 4px">Belum ada absensi dicatat pada periode ini.</p>':
+        absensi.map(a=>{
+          const cls = a.status==='h'?'h':(a.status==='i'?'i':'a');
+          const label = statusLabel[a.status]||a.status;
+          const clr = cls==='h'?'#1f6b3a':(cls==='i'?'#8a5a13':'#c0392b');
+          return `<div class="riwayat-item">
+            <span class="riwayat-badge ${cls}">${label.charAt(0)}</span>
+            <div class="ri-main">
+              <div class="ri-title">${escapeHtml(namaKegiatan(a.kegiatanId))}</div>
+              <div class="ri-sub">${fmtTglIndo(a.tanggal)}</div>
+            </div>
+            <div class="ri-right" style="color:${clr}">${label}</div>
+          </div>`;
+        }).join('')}
+    </div>
   `;
   drawSantriHafalanChart(hafalan);
   drawSantriAbsensiChart(santriId, from, to);
