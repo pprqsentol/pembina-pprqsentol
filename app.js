@@ -11,57 +11,6 @@ const SUPABASE_KEY = 'sb_publishable_BTFxSTrt1vM1seoQaXG_7g_mqYo5aqq';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-/* ====== PASANG APLIKASI (PWA) ======
-   Chrome/Edge di Android baru menawarkan pasang otomatis setelah kriteria
-   & "skor keterlibatan" browser terpenuhi (kadang butuh beberapa kali
-   kunjungan), jadi tombol "Pasang Aplikasi" ini dipasang manual supaya
-   pengguna bisa memasang kapan saja tanpa menunggu itu. iOS Safari malah
-   sama sekali tidak punya prompt otomatis -- di sana harus lewat menu
-   Bagikan, jadi tombolnya diarahkan ke instruksi manual. */
-let deferredInstallPrompt = null;
-window.addEventListener('beforeinstallprompt', (e)=>{
-  e.preventDefault();
-  deferredInstallPrompt = e;
-  document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = '');
-});
-window.addEventListener('appinstalled', ()=>{
-  deferredInstallPrompt = null;
-  document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = 'none');
-});
-function isRunningAsInstalledPwa(){
-  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-}
-function isIos(){
-  return /iphone|ipad|ipod/i.test(navigator.userAgent);
-}
-async function installApp(){
-  if(deferredInstallPrompt){
-    deferredInstallPrompt.prompt();
-    await deferredInstallPrompt.userChoice;
-    deferredInstallPrompt = null;
-    document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = 'none');
-    return;
-  }
-  if(isIos()){
-    alert('Cara pasang di iPhone/iPad:\n1. Ketuk ikon Bagikan (kotak dengan panah ke atas) di Safari.\n2. Pilih "Tambah ke Layar Utama".\n\nCatatan: harus dibuka lewat Safari, bukan Chrome, supaya opsi ini muncul.');
-    return;
-  }
-  alert('Kalau tombol "Pasang" tidak muncul sendiri: buka menu titik tiga di pojok browser lalu pilih "Instal aplikasi" / "Tambahkan ke layar utama". Pastikan juga aplikasi dibuka lewat alamat HTTPS.');
-}
-/* Kalau sudah terpasang (dibuka sebagai app, bukan tab browser), sembunyikan
-   tombol pasang -- tidak relevan lagi. */
-if(isRunningAsInstalledPwa()){
-  document.addEventListener('DOMContentLoaded', ()=>{
-    document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = 'none');
-  });
-} else if(isIos()){
-  /* iOS tidak pernah memicu beforeinstallprompt, jadi tombolnya
-     ditampilkan dari awal supaya pengguna iPhone tetap dapat instruksi. */
-  document.addEventListener('DOMContentLoaded', ()=>{
-    document.querySelectorAll('#btnInstallApp, #btnInstallAppTop').forEach(b=> b.style.display = '');
-  });
-}
-
 /* Mengubah karakter khusus HTML (<, >, &, ", ') jadi bentuk aman sebelum
    ditampilkan, supaya teks bebas-ketik dari pengguna lain (mis. nama santri
    yang diisi admin_pusat) tidak bisa dieksekusi sebagai kode HTML/JS saat
@@ -301,19 +250,6 @@ async function logout() {
   document.getElementById('app').style.display='none';
   document.getElementById('loginScreen').style.display='flex';
 }
-/* Ukur tinggi topbar sebenarnya lalu simpan ke CSS variable --topbar-h,
-   supaya .page-head (judul tab yang stuck) selalu nempel persis di
-   bawahnya, di layar berapa pun ukurannya. */
-function syncTopbarHeight(){
-  const tb = document.querySelector('.topbar');
-  if(tb) document.documentElement.style.setProperty('--topbar-h', tb.offsetHeight + 'px');
-}
-window.addEventListener('resize', syncTopbarHeight);
-/* orientationchange kadang tidak diikuti resize tepat waktu di sebagian
-   browser HP, jadi disinkron ulang sesaat setelah rotasi selesai supaya
-   --topbar-h (dan tinggi page-head yang menempel di bawahnya) selalu akurat. */
-window.addEventListener('orientationchange', ()=> setTimeout(syncTopbarHeight, 300));
-
 function enterApp(){
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('app').style.display='block';
@@ -331,7 +267,6 @@ function enterApp(){
   renderNav();
   const nav = navForSession();
   goPage(nav.some(i=>i.id===currentPage) ? currentPage : nav[0].id);
-  syncTopbarHeight();
 }
 
 /* ---------- NAV ---------- */
@@ -361,12 +296,6 @@ function visibleSantriForKegiatan(kegiatanId){
 function initial(name){ return (name||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function val(id){ return document.getElementById(id).value; }
-/* Format tanggal singkat ala Indonesia untuk daftar Riwayat, mis. "12 Agt 2026". */
-function fmtTglIndo(t){
-  if(!t) return '-';
-  const d = new Date(t);
-  return d.toLocaleDateString('id-ID', {day:'2-digit', month:'short', year:'numeric'});
-}
 
 /* ---------- ABSENSI ---------- */
 let absKegiatanId = null, absTanggal = todayStr();
@@ -375,19 +304,17 @@ function renderAbsensiPage(){
   const santri = visibleSantriForKegiatan(absKegiatanId);
   const kegAktif = DB.kegiatan.find(k=>k.id===absKegiatanId);
   document.getElementById('content').innerHTML = `
-    <div class="page-head">
-      <h2>Absensi</h2>
-      <div class="card">
-        <label>Kegiatan</label>
-        <select onchange="absKegiatanId=this.value; renderAbsensiPage()">
-          ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}</option>`).join('')}
-        </select>
-        <label>Tanggal</label>
-        <input type="date" value="${absTanggal}" onchange="absTanggal=this.value; renderAbsensiPage()">
-        ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
-        <div class="btn-row" style="margin-top:8px">
-          <button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>
-        </div>
+    <h2>Absensi</h2>
+    <div class="card">
+      <label>Kegiatan</label>
+      <select onchange="absKegiatanId=this.value; renderAbsensiPage()">
+        ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}</option>`).join('')}
+      </select>
+      <label>Tanggal</label>
+      <input type="date" value="${absTanggal}" onchange="absTanggal=this.value; renderAbsensiPage()">
+      ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>
       </div>
     </div>
     <div class="card">
@@ -423,7 +350,6 @@ let absScanner = null;
 let absScanBusy = false;
 let absLastScan = { text: '', time: 0 };
 let absTorchOn = false;
-let absScanFocusTimer = null;
 
 function openAbsensiScanner(){
   if(!absKegiatanId){ alert('Pilih kegiatan terlebih dahulu.'); return; }
@@ -431,24 +357,13 @@ function openAbsensiScanner(){
     alert('Fitur scan QR belum siap dimuat. Pastikan HP terhubung internet lalu coba lagi.');
     return;
   }
-  /* Kamera HP (beda dengan webcam laptop yang biasanya dites dari
-     localhost) hanya bisa diakses browser lewat halaman yang aman
-     (HTTPS), atau lewat "localhost". Kalau app dibuka lewat alamat IP
-     polos (http://192.168.x.x, dsb) di HP, browser diam-diam menolak
-     izin kamera -- ini penyebab paling sering "jalan di laptop, mati
-     di HP". Dicek & dikasih pesan jelas di sini sebelum coba nyalakan
-     kamera. */
-  const host = location.hostname;
-  const isSecure = location.protocol === 'https:' || host === 'localhost' || host === '127.0.0.1';
-  if(!isSecure){
-    alert('Kamera tidak bisa diakses karena halaman ini dibuka lewat alamat yang tidak aman (' + location.protocol + '//' + host + '). Buka aplikasi ini lewat alamat HTTPS supaya kamera bisa dipakai di HP.');
-    return;
-  }
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    alert('Browser di HP ini tidak mendukung akses kamera lewat web. Coba pakai Chrome/Safari versi terbaru.');
-    return;
-  }
   absTorchOn = false;
+  /* Buka/resume AudioContext di sini (dipicu tap tombol) supaya browser
+     mobile mengizinkan bunyi diputar nanti saat scan sukses. */
+  try{
+    if(!_absAudioCtx) _absAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(_absAudioCtx.state === 'suspended') _absAudioCtx.resume();
+  }catch(e){}
   showModal('Scan Kartu Santri', `
     <p class="muted" id="scanInfo">Arahkan kamera ke QR code di kartu santri.</p>
     <div id="qrReaderAbsensi" class="qr-reader-box"></div>
@@ -460,44 +375,24 @@ function openAbsensiScanner(){
   `, 'closeAbsensiScanner()');
 
   absScanner = new Html5Qrcode('qrReaderAbsensi');
-  absScanFocusTimer = null;
   absScanner.start(
-    /* cameraIdOrConfig -- HARUS persis 1 key, tidak boleh dicampur dengan
-       resolusi. Resolusi ditaruh di videoConstraints pada parameter kedua. */
     { facingMode: 'environment' },
     {
       fps: 10,
       qrbox: function(viewfinderWidth, viewfinderHeight){
         const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-        const size = Math.max(220, Math.floor(minEdge * 0.75));
+        const size = Math.max(150, Math.floor(minEdge * 0.7));
         return { width: size, height: size };
-      },
-      aspectRatio: 1.0,
-      disableFlip: false,
-      /* Minta resolusi yang cukup tinggi -- resolusi default kamera kadang
-         terlalu rendah untuk membaca QR kecil di kartu santri. */
-      videoConstraints: {
-        facingMode: 'environment',
-        width: { ideal: 1280 }, height: { ideal: 720 }
-      },
-      /* Manfaatkan BarcodeDetector bawaan browser kalau tersedia (Chrome/
-         WebView Android) -- jauh lebih cepat & akurat dibanding pembaca
-         QR berbasis JS murni, dan sering jadi penyebab kamera cuma
-         "berkedip" tanpa pernah berhasil membaca di HP tertentu. */
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+      }
     },
     onAbsensiScanSuccess,
     function(){ /* frame tanpa QR terbaca, abaikan */ }
   ).then(async ()=>{
     const info = document.getElementById('scanInfo');
-    if(info) info.textContent = 'Arahkan kamera ke QR code di kartu santri. Ketuk video kalau gambar buram.';
+    if(info) info.textContent = 'Arahkan kamera ke QR code di kartu santri.';
     const fb = document.getElementById('scanFeedback');
     if(fb){ fb.className = 'scan-feedback'; fb.textContent = 'Siap memindai.'; }
-    await applyAbsensiFocus();
-    /* Sebagian HP melepas mode fokus kontinu setelah beberapa saat,
-       jadi dicoba diterapkan ulang tiap 2 detik supaya kamera tidak
-       balik buram. */
-    absScanFocusTimer = setInterval(applyAbsensiFocus, 2000);
+    try{ await absScanner.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }); }catch(e){}
     try{
       const settings = absScanner.getRunningTrackSettings();
       if(settings && ('torch' in settings)){
@@ -505,33 +400,37 @@ function openAbsensiScanner(){
         if(btn) btn.style.display = '';
       }
     }catch(e){}
-    /* Tap-to-focus: sentuh area video untuk memaksa kamera fokus ulang,
-       berguna kalau perangkat tidak mendukung fokus kontinu otomatis. */
-    const box = document.getElementById('qrReaderAbsensi');
-    if(box) box.onclick = applyAbsensiFocus;
   }).catch(err=>{
     const info = document.getElementById('scanInfo');
-    const fb = document.getElementById('scanFeedback');
-    const name = (err && (err.name || err)) + '';
-    let pesan;
-    if(name.includes('NotAllowedError') || name.includes('PermissionDenied')){
-      pesan = 'Izin kamera ditolak. Buka pengaturan situs di browser HP, izinkan Kamera untuk aplikasi ini, lalu coba lagi.';
-    } else if(name.includes('NotFoundError') || name.includes('OverconstrainedError')){
-      pesan = 'Kamera belakang tidak ditemukan di perangkat ini.';
-    } else if(name.includes('NotReadableError')){
-      pesan = 'Kamera sedang dipakai aplikasi lain. Tutup aplikasi/tab lain yang memakai kamera lalu coba lagi.';
-    } else if(name.includes('SecurityError')){
-      pesan = 'Akses kamera diblokir karena halaman tidak dibuka lewat HTTPS.';
-    } else {
-      pesan = 'Tidak bisa mengakses kamera (' + name + ').';
-    }
-    if(info) info.textContent = pesan;
-    if(fb){ fb.className = 'scan-feedback err'; fb.textContent = pesan; }
+    if(info) info.textContent = 'Tidak bisa mengakses kamera: ' + err;
   });
 }
-async function applyAbsensiFocus(){
-  if(!absScanner) return;
-  try{ await absScanner.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }); }catch(e){}
+
+/* Getar + bunyi saat scan berhasil dicatat. Pakai Web Audio API (bukan file
+   audio) supaya tetap jalan offline sebagai PWA, dan navigator.vibrate untuk
+   getar (hanya didukung di beberapa browser Android; di iOS akan diabaikan
+   otomatis tanpa error). */
+let _absAudioCtx = null;
+function playScanSuccessFeedback(){
+  try{
+    if(navigator.vibrate) navigator.vibrate(150);
+  }catch(e){}
+  try{
+    if(!_absAudioCtx) _absAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _absAudioCtx;
+    if(ctx.state === 'suspended') ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.23);
+  }catch(e){}
 }
 
 function onAbsensiScanSuccess(decodedText){
@@ -556,6 +455,7 @@ function onAbsensiScanSuccess(decodedText){
       fb.className = ok ? 'scan-feedback ok' : 'scan-feedback err';
       fb.textContent = ok ? ('\u2713 Hadir dicatat: ' + s.nama) : ('Gagal menyimpan absen ' + s.nama + ', coba scan ulang.');
     }
+    if(ok) playScanSuccessFeedback();
     setTimeout(()=>{ absScanBusy = false; }, 900);
   });
 }
@@ -591,7 +491,6 @@ async function toggleTorch(){
 }
 
 function closeAbsensiScanner(){
-  if(absScanFocusTimer){ clearInterval(absScanFocusTimer); absScanFocusTimer = null; }
   const finish = ()=>{
     absScanner = null;
     absTorchOn = false;
@@ -610,44 +509,49 @@ function closeAbsensiScanner(){
 }
 
 /* ---------- HAFALAN ---------- */
-let hafalanSearchQuery = '';
-let hafalanProgramFilter = 'semua'; // 'semua' | 'Takhossus' | 'Non-Takhossus'
+let hafSearchQuery = '';
+let hafProgramFilter = '';
+
+/* Daftar santri Hafalan setelah difilter oleh pencarian nama/no. induk dan
+   dropdown program. Pencarian manual ini tetap ada berdampingan dengan
+   scanner QR sebagai antisipasi kalau scan gagal/error. */
 function filteredHafalanSantri(){
-  const q = hafalanSearchQuery.trim().toLowerCase();
+  const q = (hafSearchQuery||'').trim().toLowerCase();
   return visibleSantri().filter(s=>{
-    if(hafalanProgramFilter!=='semua' && s.program!==hafalanProgramFilter) return false;
+    if(hafProgramFilter && s.program !== hafProgramFilter) return false;
     if(!q) return true;
-    return s.nama.toLowerCase().includes(q) || (s.noInduk||'').toLowerCase().includes(q);
+    return (s.nama||'').toLowerCase().includes(q) || (s.noInduk||'').toLowerCase().includes(q);
   });
 }
+
 function renderHafalanPage(){
-  document.getElementById('content').innerHTML = `
-    <div class="page-head">
-      <h2>Hafalan</h2>
-      <div class="filter-bar">
-        <div class="filter-search">
-          <input type="text" id="hafalanSearchInput" placeholder="Cari nama atau no. induk santri..." value="${escapeHtml(hafalanSearchQuery)}" oninput="hafalanSearchQuery=this.value; renderHafalanListBody()">
-        </div>
-        <select onchange="hafalanProgramFilter=this.value; renderHafalanListBody()">
-          <option value="semua" ${hafalanProgramFilter==='semua'?'selected':''}>Semua Program</option>
-          <option value="Takhossus" ${hafalanProgramFilter==='Takhossus'?'selected':''}>Takhossus</option>
-          <option value="Non-Takhossus" ${hafalanProgramFilter==='Non-Takhossus'?'selected':''}>Non-Takhossus</option>
-        </select>
-      </div>
-    </div>
-    <div id="hafalanListBody"></div>
-  `;
-  renderHafalanListBody();
-}
-function renderHafalanListBody(){
-  const all = visibleSantri();
+  /* Simpan fokus & posisi kursor input pencarian, supaya tidak hilang saat
+     seluruh #content di-render ulang setiap kali user mengetik. */
+  const activeEl = document.activeElement;
+  const activeId = activeEl && activeEl.id;
+  const selStart = activeEl && typeof activeEl.selectionStart === 'number' ? activeEl.selectionStart : null;
+  const selEnd = activeEl && typeof activeEl.selectionEnd === 'number' ? activeEl.selectionEnd : null;
+
+  const programs = ['Takhossus', 'Non-Takhossus'];
   const santri = filteredHafalanSantri();
-  const body = document.getElementById('hafalanListBody');
-  if(!body) return;
-  body.innerHTML = `
-    ${(hafalanSearchQuery.trim() || hafalanProgramFilter!=='semua') ? `<p class="filter-count">Menampilkan ${santri.length} dari ${all.length} santri</p>` : ''}
+
+  document.getElementById('content').innerHTML = `
+    <h2>Hafalan</h2>
+    <div class="hafalan-toolbar">
+      <div class="search-box">
+        <span class="search-ic">&#128269;</span>
+        <input type="text" id="hafSearchInput" placeholder="Cari nama atau no. induk santri..."
+          value="${escapeHtml(hafSearchQuery)}"
+          oninput="hafSearchQuery=this.value; renderHafalanPage()">
+      </div>
+      <select onchange="hafProgramFilter=this.value; renderHafalanPage()">
+        <option value="" ${hafProgramFilter===''?'selected':''}>Semua Program</option>
+        ${programs.map(p=>`<option value="${escapeHtml(p)}" ${p===hafProgramFilter?'selected':''}>${escapeHtml(p)}</option>`).join('')}
+      </select>
+      <button class="icon-btn-square" onclick="openHafalanScanner()" title="Scan QR Kartu Santri" aria-label="Scan QR Kartu Santri">&#128247;</button>
+    </div>
     <div class="card">
-      ${all.length===0 ? '<p class="muted">Belum ada data santri.</p>' : santri.length===0 ? '<p class="muted">Tidak ada santri yang cocok dengan pencarian/filter.</p>' : santri.map(s=>{
+      ${santri.length===0?'<p class="muted">Tidak ada santri yang cocok.</p>':santri.map(s=>{
         const t = totalHafalanSantri(s.id);
         return `<div class="list-item">
           <div class="avatar">${escapeHtml(initial(s.nama))}</div>
@@ -660,6 +564,14 @@ function renderHafalanListBody(){
       }).join('')}
     </div>
   `;
+
+  if(activeId === 'hafSearchInput'){
+    const el = document.getElementById('hafSearchInput');
+    if(el){
+      el.focus();
+      if(selStart !== null){ try{ el.setSelectionRange(selStart, selEnd); }catch(e){} }
+    }
+  }
 }
 function openHafalanForm(santriId){
   const s = DB.santri.find(x=>x.id===santriId);
@@ -705,6 +617,127 @@ async function saveHafalan(santriId){
   renderHafalanPage();
 }
 
+/* ---------- HAFALAN: SCAN QR KARTU SANTRI ---------- */
+let hafScanner = null;
+let hafTorchOn = false;
+let hafScanBusy = false;
+let hafLastScan = { text: '', time: 0 };
+
+function openHafalanScanner(){
+  if(typeof Html5Qrcode === 'undefined'){
+    alert('Fitur scan QR belum siap dimuat. Pastikan HP terhubung internet lalu coba lagi.');
+    return;
+  }
+  hafTorchOn = false;
+  /* Buka/resume AudioContext di sini (dipicu tap tombol) supaya browser
+     mobile mengizinkan bunyi diputar nanti saat scan sukses. */
+  try{
+    if(!_absAudioCtx) _absAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(_absAudioCtx.state === 'suspended') _absAudioCtx.resume();
+  }catch(e){}
+  showModal('Scan Kartu Santri', `
+    <p class="muted" id="hafScanInfo">Arahkan kamera ke QR code di kartu santri.</p>
+    <div id="qrReaderHafalan" class="qr-reader-box"></div>
+    <div class="scan-feedback" id="hafScanFeedback">Menyalakan kamera&hellip;</div>
+    <div class="btn-row">
+      <button class="btn btn-torch" id="btnTorchHafalan" onclick="toggleTorchHafalan()" style="display:none">&#128294; Senter</button>
+      <button class="btn" onclick="closeHafalanScanner()">Tutup</button>
+    </div>
+  `, 'closeHafalanScanner()');
+
+  hafScanner = new Html5Qrcode('qrReaderHafalan');
+  hafScanner.start(
+    { facingMode: 'environment' },
+    {
+      fps: 10,
+      qrbox: function(viewfinderWidth, viewfinderHeight){
+        const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+        const size = Math.max(150, Math.floor(minEdge * 0.7));
+        return { width: size, height: size };
+      }
+    },
+    onHafalanScanSuccess,
+    function(){ /* frame tanpa QR terbaca, abaikan */ }
+  ).then(async ()=>{
+    const info = document.getElementById('hafScanInfo');
+    if(info) info.textContent = 'Arahkan kamera ke QR code di kartu santri.';
+    const fb = document.getElementById('hafScanFeedback');
+    if(fb){ fb.className = 'scan-feedback'; fb.textContent = 'Siap memindai.'; }
+    /* Auto fokus: minta kamera fokus terus-menerus (continuous autofocus)
+       supaya QR di kartu tetap tajam tanpa perlu tap manual. */
+    try{ await hafScanner.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }); }catch(e){}
+    try{
+      const settings = hafScanner.getRunningTrackSettings();
+      if(settings && ('torch' in settings)){
+        const btn = document.getElementById('btnTorchHafalan');
+        if(btn) btn.style.display = '';
+      }
+    }catch(e){}
+  }).catch(err=>{
+    const info = document.getElementById('hafScanInfo');
+    if(info) info.textContent = 'Tidak bisa mengakses kamera: ' + err;
+  });
+}
+
+function onHafalanScanSuccess(decodedText){
+  const now = Date.now();
+  if(hafScanBusy) return;
+  if(decodedText === hafLastScan.text && (now - hafLastScan.time) < 2500) return;
+  hafLastScan = { text: decodedText, time: now };
+  hafScanBusy = true;
+
+  const kode = (decodedText||'').trim();
+  const santriList = visibleSantri();
+  const s = santriList.find(x => x.noInduk === kode);
+  const fb = document.getElementById('hafScanFeedback');
+
+  if(!s){
+    if(fb){ fb.className = 'scan-feedback err'; fb.textContent = 'QR tidak dikenali / bukan kartu santri untuk program ini.'; }
+    setTimeout(()=>{ hafScanBusy = false; }, 900);
+    return;
+  }
+
+  if(fb){ fb.className = 'scan-feedback ok'; fb.textContent = '\u2713 Terdeteksi: ' + s.nama; }
+  playScanSuccessFeedback();
+  /* Langsung buka form Input Hafalan untuk santri yang terdeteksi -- tapi
+     TUNGGU sampai kamera benar-benar berhenti dulu (closeHafalanScanner
+     bersifat async), supaya modal form tidak ikut tertutup belakangan. */
+  setTimeout(()=>{
+    closeHafalanScanner(()=> openHafalanForm(s.id));
+  }, 500);
+}
+
+async function toggleTorchHafalan(){
+  if(!hafScanner) return;
+  const next = !hafTorchOn;
+  try{
+    await hafScanner.applyVideoConstraints({ advanced: [{ torch: next }] });
+    hafTorchOn = next;
+    const btn = document.getElementById('btnTorchHafalan');
+    if(btn) btn.classList.toggle('on', hafTorchOn);
+  } catch(e){
+    alert('Senter tidak didukung di perangkat/browser ini.');
+  }
+}
+
+function closeHafalanScanner(afterClose){
+  const finish = ()=>{
+    hafScanner = null;
+    hafTorchOn = false;
+    hafScanBusy = false;
+    if(typeof afterClose === 'function') afterClose();
+    else closeModal();
+  };
+  if(hafScanner){
+    hafScanner.stop().then(()=>{
+      try{ hafScanner.clear(); }catch(e){}
+      finish();
+    }).catch(()=> finish());
+  } else {
+    finish();
+  }
+}
+
 /* ---------- RIWAYAT (absensi + hafalan, per santri) ---------- */
 let riwayatSantriId = null;
 let riwayatPeriode = 'bulan';
@@ -722,16 +755,14 @@ function renderRiwayatPage(){
   const santri = visibleSantri();
   if(!riwayatSantriId || !santri.some(s=>s.id===riwayatSantriId)) riwayatSantriId = santri[0]?.id || null;
   document.getElementById('content').innerHTML = `
-    <div class="page-head">
-      <h2>Riwayat</h2>
-      <div class="card">
-        <label>Santri</label>
-        <select onchange="riwayatSantriId=this.value; renderRiwayatBody()">
-          ${santri.map(s=>`<option value="${s.id}" ${s.id===riwayatSantriId?'selected':''}>${escapeHtml(s.nama)}</option>`).join('')}
-        </select>
-        <div class="tabs" style="margin-top:10px">
-          ${['hari','pekan','bulan','tahun'].map(p=>`<button class="tab ${p===riwayatPeriode?'active':''}" onclick="riwayatPeriode='${p}'; renderRiwayatBody()">${p.charAt(0).toUpperCase()+p.slice(1)}</button>`).join('')}
-        </div>
+    <h2>Riwayat</h2>
+    <div class="card">
+      <label>Santri</label>
+      <select onchange="riwayatSantriId=this.value; renderRiwayatBody()">
+        ${santri.map(s=>`<option value="${s.id}" ${s.id===riwayatSantriId?'selected':''}>${escapeHtml(s.nama)}</option>`).join('')}
+      </select>
+      <div class="tabs" style="margin-top:10px">
+        ${['hari','pekan','bulan','tahun'].map(p=>`<button class="tab ${p===riwayatPeriode?'active':''}" onclick="riwayatPeriode='${p}'; renderRiwayatBody()">${p.charAt(0).toUpperCase()+p.slice(1)}</button>`).join('')}
       </div>
     </div>
     <div id="riwayatBody"></div>
@@ -748,12 +779,11 @@ function renderRiwayatBody(){
   const statusLabel = {h:'Hadir', a:'Alpha', i:'Izin'};
   const namaKegiatan = kid => (DB.kegiatan.find(k=>k.id===kid)||{}).nama || '-';
   const totalPeriode = hafalan.reduce((sum,h)=>sum+(h.jumlahHalaman||1),0);
-  const hadirPeriode = absensi.filter(a=>a.status==='h').length;
   const t = totalHafalanSantri(santriId);
   const nh = nilaiHafalanSantri(santriId, from, to);
   const na = nilaiAbsensiSantri(santriId, from, to);
   document.getElementById('riwayatBody').innerHTML = `
-    <p class="muted">Periode: ${fmtTglIndo(from)} s.d. ${fmtTglIndo(to)}</p>
+    <p class="muted">Periode: ${from} s.d. ${to}</p>
 
     <div class="section-heading">Penilaian (periode ini)</div>
     <div class="grid2">
@@ -769,57 +799,27 @@ function renderRiwayatBody(){
       </div>
     </div>
 
-    <div class="section-heading">Riwayat Hafalan</div>
-    <div class="grid2">
-      <div class="highlight-box">
-        <div class="hb-label">Total hafalan keseluruhan</div>
-        <div class="hb-value">${t.juz} JUZ ${t.halaman} HAL.</div>
-      </div>
-      <div class="highlight-box">
-        <div class="hb-label">Sedang dihafal</div>
-        <div class="hb-value" style="font-size:14px">${formatJuzSekarang(santriId).toUpperCase()}</div>
-      </div>
+    <div class="section-heading">Riwayat Hafalan (ditambahkan pada periode ini: ${totalPeriode} halaman)</div>
+    <div class="highlight-box">
+      <div class="hb-label">Total hafalan keseluruhan</div>
+      <div class="hb-value">${t.juz} JUZ ${t.halaman} HALAMAN</div>
     </div>
-    <div class="card">
-      <div class="card-title">Tren hafalan bertambah (kumulatif periode ini) &middot; +${totalPeriode} halaman</div>
-      <canvas id="chartSantriHafalan" width="600" height="180" style="width:100%;height:150px"></canvas>
+    <div class="highlight-box">
+      <div class="hb-label">Sedang dihafal</div>
+      <div class="hb-value">${formatJuzSekarang(santriId).toUpperCase()}</div>
     </div>
-    <div class="card" style="padding:2px 10px">
-      ${hafalan.length===0?'<p class="muted" style="padding:10px 4px">Belum ada hafalan dicatat pada periode ini.</p>':
-        hafalan.map(h=>{
-          const halText = h.halamanDari===h.halamanSampai ? ('Halaman '+h.halamanDari) : ('Halaman '+h.halamanDari+'&ndash;'+h.halamanSampai);
-          return `<div class="riwayat-item">
-            <span class="riwayat-badge juz">Juz ${h.juz}</span>
-            <div class="ri-main">
-              <div class="ri-title">${halText}</div>
-              <div class="ri-sub">${fmtTglIndo(h.tanggal)}</div>
-            </div>
-            <div class="ri-right" style="color:var(--green-700)">+${h.jumlahHalaman||1} hal.</div>
-          </div>`;
-        }).join('')}
-    </div>
+    <canvas id="chartSantriHafalan" width="600" height="180" style="width:100%;height:150px;margin-top:8px"></canvas>
+    ${hafalan.length===0?'<p class="muted">Belum ada hafalan dicatat pada periode ini.</p>':`
+      <table><tr><th>Tanggal</th><th>Juz</th><th>Halaman</th></tr>
+      ${hafalan.map(h=>`<tr><td>${h.tanggal}</td><td>${h.juz}</td><td>${h.halamanDari===h.halamanSampai?h.halamanDari:h.halamanDari+'-'+h.halamanSampai}</td></tr>`).join('')}
+      </table>`}
 
-    <div class="section-heading">Riwayat Absensi (hadir ${hadirPeriode} dari ${absensi.length} tercatat)</div>
-    <div class="card">
-      <div class="card-title">Persentase kehadiran per kegiatan (periode ini)</div>
-      <canvas id="chartSantriAbsensi" width="600" height="180" style="width:100%;height:150px"></canvas>
-    </div>
-    <div class="card" style="padding:2px 10px">
-      ${absensi.length===0?'<p class="muted" style="padding:10px 4px">Belum ada absensi dicatat pada periode ini.</p>':
-        absensi.map(a=>{
-          const cls = a.status==='h'?'h':(a.status==='i'?'i':'a');
-          const label = statusLabel[a.status]||a.status;
-          const clr = cls==='h'?'#1f6b3a':(cls==='i'?'#8a5a13':'#c0392b');
-          return `<div class="riwayat-item">
-            <span class="riwayat-badge ${cls}">${label.charAt(0)}</span>
-            <div class="ri-main">
-              <div class="ri-title">${escapeHtml(namaKegiatan(a.kegiatanId))}</div>
-              <div class="ri-sub">${fmtTglIndo(a.tanggal)}</div>
-            </div>
-            <div class="ri-right" style="color:${clr}">${label}</div>
-          </div>`;
-        }).join('')}
-    </div>
+    <div class="section-heading">Riwayat Absensi (periode ini)</div>
+    <canvas id="chartSantriAbsensi" width="600" height="180" style="width:100%;height:150px"></canvas>
+    ${absensi.length===0?'<p class="muted">Belum ada absensi dicatat pada periode ini.</p>':`
+      <table><tr><th>Tanggal</th><th>Kegiatan</th><th>Status</th></tr>
+      ${absensi.map(a=>`<tr><td>${a.tanggal}</td><td>${namaKegiatan(a.kegiatanId)}</td><td>${statusLabel[a.status]||a.status}</td></tr>`).join('')}
+      </table>`}
   `;
   drawSantriHafalanChart(hafalan);
   drawSantriAbsensiChart(santriId, from, to);
