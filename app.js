@@ -299,15 +299,47 @@ function val(id){ return document.getElementById(id).value; }
 
 /* ---------- ABSENSI ---------- */
 let absKegiatanId = null, absTanggal = todayStr();
+let absFilter = 'semua'; // semua | h | a | i | kosong
+let absSearch = '';
+
 function renderAbsensiPage(){
   if(!absKegiatanId) absKegiatanId = DB.kegiatan[0]?.id;
-  const santri = visibleSantriForKegiatan(absKegiatanId);
   const kegAktif = DB.kegiatan.find(k=>k.id===absKegiatanId);
+  const semuaSantri = visibleSantriForKegiatan(absKegiatanId);
+
+  /* status tiap santri untuk kegiatan+tanggal terpilih (kosong = belum diisi sama sekali) */
+  const withStatus = semuaSantri.map(s=>{
+    const rec = DB.absensi.find(a=>a.santriId===s.id && a.kegiatanId===absKegiatanId && a.tanggal===absTanggal);
+    return { s, st: rec ? rec.status : '' };
+  });
+  const jumlah = {
+    h: withStatus.filter(x=>x.st==='h').length,
+    a: withStatus.filter(x=>x.st==='a').length,
+    i: withStatus.filter(x=>x.st==='i').length,
+    kosong: withStatus.filter(x=>x.st==='').length
+  };
+
+  /* terapkan filter status + pencarian nama */
+  let tampil = withStatus;
+  if(absFilter !== 'semua') tampil = tampil.filter(x => x.st === (absFilter==='kosong' ? '' : absFilter));
+  if(absSearch.trim()) {
+    const q = absSearch.trim().toLowerCase();
+    tampil = tampil.filter(x => x.s.nama.toLowerCase().includes(q));
+  }
+
+  const filterTabs = [
+    {key:'semua', label:'Semua', count: withStatus.length},
+    {key:'kosong', label:'Belum Diisi', count: jumlah.kosong},
+    {key:'h', label:'Hadir', count: jumlah.h},
+    {key:'i', label:'Izin', count: jumlah.i},
+    {key:'a', label:'Alpha', count: jumlah.a}
+  ];
+
   document.getElementById('content').innerHTML = `
     <h2>Absensi</h2>
     <div class="card">
       <label>Kegiatan</label>
-      <select onchange="absKegiatanId=this.value; renderAbsensiPage()">
+      <select onchange="absKegiatanId=this.value; absFilter='semua'; absSearch=''; renderAbsensiPage()">
         ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}</option>`).join('')}
       </select>
       <label>Tanggal</label>
@@ -315,12 +347,18 @@ function renderAbsensiPage(){
       ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
       <div class="btn-row" style="margin-top:8px">
         <button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>
+        <button class="btn" onclick="tandaiSisanyaAlpha()">Tandai Sisanya Alpha</button>
       </div>
     </div>
     <div class="card">
-      ${santri.length===0?'<p class="muted">Belum ada santri yang sesuai untuk kegiatan ini.</p>':santri.map(s=>{
-        const rec = DB.absensi.find(a=>a.santriId===s.id && a.kegiatanId===absKegiatanId && a.tanggal===absTanggal);
-        const st = rec?rec.status:'';
+      <input type="text" placeholder="Cari nama santri&hellip;" value="${escapeHtml(absSearch)}"
+        oninput="absSearch=this.value; renderAbsensiPage()" style="margin-bottom:10px">
+      <div class="btn-row" style="margin-top:0">
+        ${filterTabs.map(f=>`<button class="btn btn-sm ${absFilter===f.key?'btn-accent':''}" onclick="absFilter='${f.key}'; renderAbsensiPage()">${f.label} (${f.count})</button>`).join('')}
+      </div>
+    </div>
+    <div class="card">
+      ${tampil.length===0?'<p class="muted">Tidak ada santri yang cocok dengan filter/pencarian ini.</p>':tampil.map(({s, st})=>{
         return `<div class="att-row">
           <span>${escapeHtml(s.nama)}</span>
           <div class="att-opts">
@@ -331,7 +369,7 @@ function renderAbsensiPage(){
         </div>`;
       }).join('')}
     </div>
-    <p class="muted">H = Hadir &middot; A = Tidak hadir &middot; I = Izin</p>
+    <p class="muted">H = Hadir &middot; A = Tidak hadir/Alpha &middot; I = Izin. Sudah discan QR otomatis H, tap tombol I untuk yang izin/sakit.</p>
   `;
 }
 async function setAbsensi(santriId, status){
@@ -342,6 +380,25 @@ async function setAbsensi(santriId, status){
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await loadAll();
+  renderAbsensiPage();
+}
+
+/* Isi otomatis 'Alpha' untuk semua santri yang BELUM ada catatan absensi
+   (belum discan & belum ditandai manual) pada kegiatan+tanggal terpilih.
+   Santri yang sudah H atau I tidak diubah. Setelah ini pembina tinggal
+   pakai filter "Alpha" lalu tap tombol I untuk yang ternyata izin/sakit. */
+async function tandaiSisanyaAlpha(){
+  const semuaSantri = visibleSantriForKegiatan(absKegiatanId);
+  const belumDiisi = semuaSantri.filter(s => !DB.absensi.find(a=>a.santriId===s.id && a.kegiatanId===absKegiatanId && a.tanggal===absTanggal));
+  if(belumDiisi.length===0){ alert('Semua santri sudah memiliki catatan absensi untuk kegiatan & tanggal ini.'); return; }
+  if(!confirm(`Tandai ${belumDiisi.length} santri yang belum diisi sebagai Alpha?`)) return;
+  const rows = belumDiisi.map(s => ({
+    santri_id: s.id, kegiatan_id: absKegiatanId, tanggal: absTanggal, status: STATUS_TO_DB['a'], dicatat_oleh: SESSION.nama || SESSION.email
+  }));
+  const { error } = await sb.from('absensi').insert(rows);
+  if(error){ alert('Gagal menyimpan: ' + error.message); return; }
+  await loadAll();
+  absFilter = 'a';
   renderAbsensiPage();
 }
 
