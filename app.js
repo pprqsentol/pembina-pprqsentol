@@ -295,8 +295,14 @@ function enterApp(){
 }
 
 /* ---------- NAV ---------- */
+const NAV_ACTIONS = [
+  {id:'refresh', label:'Refresh', icon:'&#8635;', onclick:'refreshApp()'},
+  {id:'logout', label:'Keluar', icon:'&#8631;', onclick:'logout()'}
+];
 function renderNav(){
-  const html = navForSession().map(i=>`<button class="navitem" data-p="${i.id}" onclick="goPage('${i.id}')"><span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('');
+  const pageBtns = navForSession().map(i=>`<button class="navitem" data-p="${i.id}" onclick="goPage('${i.id}')"><span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('');
+  const actionBtns = NAV_ACTIONS.map(i=>`<button class="navitem navitem-action" id="navaction-${i.id}" onclick="${i.onclick}"><span class="ic">${i.icon}</span><span>${i.label}</span></button>`).join('');
+  const html = pageBtns + actionBtns;
   document.getElementById('bottomnav').innerHTML = html;
   document.getElementById('sidebar').innerHTML = html;
 }
@@ -306,6 +312,31 @@ function goPage(p){
   if(p==='absensi') renderAbsensiPage();
   if(p==='hafalan') renderHafalanPage();
   if(p==='riwayat') renderRiwayatPage();
+}
+
+/* Tombol "Refresh" di tab navigasi: ambil ulang data terbaru dari Supabase
+   lalu render ulang halaman yang sedang aktif, tanpa perlu logout/login lagi. */
+async function refreshApp(){
+  const btns = [document.getElementById('navaction-refresh')].filter(Boolean);
+  btns.forEach(b=>{ b.disabled = true; b.classList.add('spinning'); });
+  try {
+    await loadAll();
+    const oldBanner = document.getElementById('offlineBanner');
+    if(oldBanner) oldBanner.remove();
+    if(OFFLINE_MODE){
+      const b = document.createElement('div');
+      b.id = 'offlineBanner';
+      b.style.cssText = 'background:#fdecea;color:#c0392b;padding:8px 14px;font-size:13px;text-align:center';
+      b.textContent = '\u26A0 Mode offline: menampilkan cadangan data terakhir. Tambah/ubah data tidak tersedia sampai internet kembali.';
+      document.getElementById('app').prepend(b);
+    }
+    goPage(currentPage);
+  } catch(e){
+    console.error('Gagal refresh data:', e);
+    alert('Gagal memuat data terbaru: ' + e.message);
+  } finally {
+    btns.forEach(b=>{ b.disabled = false; b.classList.remove('spinning'); });
+  }
 }
 
 /* santri yang boleh dilihat -- tidak dibatasi program, semua santri tampil */

@@ -36,12 +36,24 @@ button{cursor:pointer;font-family:inherit;}
 .bottomnav .navitem.active{color:var(--green-600);}
 .bottomnav .navitem .ic{font-size:18px;}
 
+/* Tombol aksi (Refresh & Keluar) di tab navigasi -- dipisahkan sedikit
+   dari tombol halaman supaya jelas ini bukan pindah halaman, tapi aksi. */
+.navitem-action{position:relative;}
+.bottomnav .navitem-action{border-left:1px solid var(--border);}
+.navitem-action:disabled{opacity:0.5;}
+.navitem-action.spinning .ic{display:inline-block;animation:navspin 0.7s linear infinite;}
+#navaction-logout .ic{color:var(--danger);}
+.sidebar .navitem-action{color:var(--muted);}
+@keyframes navspin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+
 /* Sidebar (desktop) */
 @media (min-width:800px){
   .bottomnav{display:none;}
   .sidebar{display:flex;flex-direction:column;width:190px;background:var(--card);border-right:1px solid var(--border);padding:14px 8px;gap:2px;}
   .sidebar .navitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:none;background:none;text-align:left;color:var(--text);font-size:14px;}
   .sidebar .navitem.active{background:var(--green-100);color:var(--green-700);font-weight:600;}
+  .sidebar .navitem-action{margin-top:8px;}
+  .sidebar .navitem:not(.navitem-action) + .navitem-action{border-top:1px solid var(--border);padding-top:16px;}
   .content{padding:20px;}
 }
 
