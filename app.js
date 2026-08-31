@@ -74,6 +74,25 @@ function nilaiAbsensiSantri(santriId, from, to){
   return { hadir, total: items.length, pct, predikat: predikatFromPct(pct) };
 }
 
+/* ====== Jenis kegiatan hafalan ======
+   Kegiatan hafalan dikenali dari NAMA-nya (harus persis, tanpa memandang huruf besar/kecil)
+   yang dibuat lewat Aplikasi Pondok -> Pengaturan -> Kegiatan:
+   - 'tambah' (Setoran 1, Setoran Bin Nadhor): menambah hafalan baru, halaman lanjut otomatis, disimpan di tabel `hafalan`.
+   - 'ulang' (Setoran 2, Murojaah 1, Murojaah 2): mengulang hafalan lama (juz + cakupan), disimpan di tabel `murojaah`. */
+const HAFALAN_JENIS = {
+  'setoran 1': 'tambah',
+  'setoran bin nadhor': 'tambah',
+  'setoran 2': 'ulang',
+  'murojaah 1': 'ulang',
+  'murojaah 2': 'ulang'
+};
+function jenisKegiatanHafalan(nama){
+  return HAFALAN_JENIS[String(nama||'').trim().toLowerCase()] || null;
+}
+function hafalanKegiatanList(){
+  return DB.kegiatan.filter(k=>jenisKegiatanHafalan(k.nama));
+}
+
 /* ====== Urutan hafalan pondok ======
    Santri menghafal TIDAK berurutan 1-30, tapi: 29, 30, 1, 2, 3, ... , 28. */
 const JUZ_ORDER = [29, 30, ...Array.from({length:28}, (_,i)=>i+1)];
@@ -133,16 +152,17 @@ async function idbLoad(){
 }
 
 /* ====== 3. STATE APLIKASI (diisi dari Supabase setelah login) ====== */
-let DB = { kegiatan: [], santri: [], absensi: [], hafalan: [] };
+let DB = { kegiatan: [], santri: [], absensi: [], hafalan: [], murojaah: [] };
 let SESSION = null; // { userId, role, program, nama }
 
 async function loadAll() {
   try {
-    const [kegiatanRes, santriRes, absensiRes, hafalanRes] = await Promise.all([
+    const [kegiatanRes, santriRes, absensiRes, hafalanRes, murojaahRes] = await Promise.all([
       sb.from('kegiatan').select('*').eq('aktif', true).order('nama'),
       sb.from('santri_umum').select('*').eq('aktif', true).order('nama'),
       sb.from('absensi').select('*'),
-      sb.from('hafalan').select('*')
+      sb.from('hafalan').select('*'),
+      sb.from('murojaah').select('*')
     ]);
     if(kegiatanRes.error) throw kegiatanRes.error;
     DB = {
@@ -155,8 +175,13 @@ async function loadAll() {
       hafalan: (hafalanRes.data || []).map(h => ({
         id: h.id, santriId: h.santri_id, tanggal: h.tanggal, juz: h.juz,
         halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
-        jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1
-      }))
+        jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
+        kegiatanId: h.kegiatan_id || null
+      })),
+      murojaah: (murojaahRes && !murojaahRes.error) ? (murojaahRes.data || []).map(m => ({
+        id: m.id, santriId: m.santri_id, kegiatanId: m.kegiatan_id, tanggal: m.tanggal,
+        juz: m.juz, cakupan: m.cakupan
+      })) : []
     };
     OFFLINE_MODE = false;
     idbSave(DB);
@@ -568,17 +593,34 @@ function closeAbsensiScanner(){
 /* ---------- HAFALAN ---------- */
 let hafSearchQuery = '';
 let hafProgramFilter = '';
+let hafKegiatanId = null;
 
 /* Daftar santri Hafalan setelah difilter oleh pencarian nama/no. induk dan
    dropdown program. Pencarian manual ini tetap ada berdampingan dengan
    scanner QR sebagai antisipasi kalau scan gagal/error. */
 function filteredHafalanSantri(){
   const q = (hafSearchQuery||'').trim().toLowerCase();
-  return visibleSantri().filter(s=>{
+  return visibleSantriForKegiatan(hafKegiatanId).filter(s=>{
     if(hafProgramFilter && s.program !== hafProgramFilter) return false;
     if(!q) return true;
     return (s.nama||'').toLowerCase().includes(q) || (s.noInduk||'').toLowerCase().includes(q);
   });
+}
+
+/* Kalau kegiatan+tanggal+santri belum ada catatan absensi sama sekali,
+   tandai otomatis Hadir begitu hafalan/murojaah-nya diinput -- supaya
+   pembina tidak perlu isi absensi Setoran/Murojaah secara terpisah.
+   Kalau sudah ada catatan (mis. Izin), tidak diubah. */
+async function tandaiHadirOtomatis(santriId, kegiatanId, tanggal){
+  if(!kegiatanId) return;
+  const ada = DB.absensi.find(a=>a.santriId===santriId && a.kegiatanId===kegiatanId && a.tanggal===tanggal);
+  if(ada) return;
+  try{
+    await sb.from('absensi').insert({
+      santri_id: santriId, kegiatan_id: kegiatanId, tanggal, status: STATUS_TO_DB['h'],
+      dicatat_oleh: SESSION.nama || SESSION.email
+    });
+  }catch(e){ console.warn('Gagal menandai hadir otomatis:', e); }
 }
 
 function renderHafalanPage(){
@@ -589,11 +631,41 @@ function renderHafalanPage(){
   const selStart = activeEl && typeof activeEl.selectionStart === 'number' ? activeEl.selectionStart : null;
   const selEnd = activeEl && typeof activeEl.selectionEnd === 'number' ? activeEl.selectionEnd : null;
 
+  const listKeg = hafalanKegiatanList();
+  if(!hafKegiatanId || !listKeg.some(k=>k.id===hafKegiatanId)) hafKegiatanId = listKeg[0]?.id || null;
+
+  if(!hafKegiatanId){
+    document.getElementById('content').innerHTML = `
+      <h2>Hafalan</h2>
+      <div class="card">
+        <p class="muted">Belum ada kegiatan hafalan yang dikonfigurasi. Minta Admin Pusat menambahkan 5 kegiatan berikut lewat Aplikasi Pondok &rarr; Pengaturan &rarr; Kegiatan (ketik nama persis seperti ini):</p>
+        <ul class="muted">
+          <li>Setoran 1</li>
+          <li>Setoran 2</li>
+          <li>Murojaah 1</li>
+          <li>Murojaah 2</li>
+          <li>Setoran Bin Nadhor</li>
+        </ul>
+      </div>
+    `;
+    return;
+  }
+
+  const kegAktif = listKeg.find(k=>k.id===hafKegiatanId);
+  const jenis = jenisKegiatanHafalan(kegAktif.nama); // 'tambah' | 'ulang'
   const programs = ['Takhossus', 'Non-Takhossus'];
   const santri = filteredHafalanSantri();
 
   document.getElementById('content').innerHTML = `
     <h2>Hafalan</h2>
+    <div class="card">
+      <label>Kegiatan</label>
+      <select onchange="hafKegiatanId=this.value; renderHafalanPage()">
+        ${listKeg.map(k=>`<option value="${k.id}" ${k.id===hafKegiatanId?'selected':''}>${escapeHtml(k.nama)}</option>`).join('')}
+      </select>
+      <p class="muted" style="margin:6px 0 0">${jenis==='tambah' ? 'Menambah hafalan baru &mdash; halaman lanjut otomatis dari posisi terakhir.' : 'Mengulang hafalan yang sudah dihafal (bukan menambah hafalan baru).'}</p>
+      ${kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${escapeHtml(kegAktif.programKhusus)}.</p>` : ''}
+    </div>
     <div class="hafalan-toolbar">
       <div class="search-box">
         <span class="search-ic">&#128269;</span>
@@ -610,13 +682,16 @@ function renderHafalanPage(){
     <div class="card">
       ${santri.length===0?'<p class="muted">Tidak ada santri yang cocok.</p>':santri.map(s=>{
         const t = totalHafalanSantri(s.id);
+        const sub = jenis==='tambah'
+          ? `Sedang: ${formatJuzSekarang(s.id)} &middot; <b>Total: ${t.juz} juz ${t.halaman} halaman</b>`
+          : `Total hafalan berjalan: <b>${t.juz} juz ${t.halaman} halaman</b>`;
         return `<div class="list-item">
           <div class="avatar">${escapeHtml(initial(s.nama))}</div>
           <div style="flex:1">
             <div class="name">${escapeHtml(s.nama)}</div>
-            <div class="sub">Sedang: ${formatJuzSekarang(s.id)} &middot; <b>Total: ${t.juz} juz ${t.halaman} halaman</b></div>
+            <div class="sub">${sub}</div>
           </div>
-          <button class="btn btn-sm btn-accent" onclick="openHafalanForm('${s.id}')">Input</button>
+          <button class="btn btn-sm btn-accent" onclick="openHafalanInputForm('${s.id}')">Input</button>
         </div>`;
       }).join('')}
     </div>
@@ -630,13 +705,25 @@ function renderHafalanPage(){
     }
   }
 }
-function openHafalanForm(santriId){
+
+/* Dipanggil dari tombol Input maupun dari hasil scan QR -- membuka form yang
+   sesuai dengan kegiatan hafalan yang sedang dipilih di dropdown Kegiatan. */
+function openHafalanInputForm(santriId){
+  const keg = DB.kegiatan.find(k=>k.id===hafKegiatanId);
+  const jenis = jenisKegiatanHafalan(keg && keg.nama);
+  if(jenis === 'ulang') openMurojaahForm(santriId, hafKegiatanId);
+  else openHafalanForm(santriId, hafKegiatanId);
+}
+
+/* ---- Form Tipe A: Setoran 1 / Setoran Bin Nadhor (menambah hafalan baru) ---- */
+function openHafalanForm(santriId, kegiatanId){
   const s = DB.santri.find(x=>x.id===santriId);
+  const keg = DB.kegiatan.find(k=>k.id===kegiatanId);
   const cur = juzSekarang(santriId);
   const dariDefault = cur.mulai ? 1 : Math.min(20, cur.halaman+1);
   const opts = (n, selected)=>Array.from({length:n},(_,i)=>i+1).map(v=>`<option value="${v}" ${v===selected?'selected':''}>${v}</option>`).join('');
   const juzOpts = JUZ_ORDER.map(j=>`<option value="${j}" ${j===cur.juz?'selected':''}>${j}</option>`).join('');
-  showModal('Input Hafalan - '+s.nama, `
+  showModal('Input '+(keg?keg.nama:'Hafalan')+' - '+s.nama, `
     <label>Tanggal</label><input type="date" id="h_tanggal" value="${todayStr()}">
     <p class="muted" style="margin:0 0 4px">Sedang: ${formatJuzSekarang(santriId)}. Urutan hafalan pondok: 29 &rarr; 30 &rarr; 1 &rarr; 2 &rarr; ... &rarr; 28.</p>
     <label>Juz</label><select id="h_juz">${juzOpts}</select>
@@ -645,7 +732,7 @@ function openHafalanForm(santriId){
       <div><label>Halaman sampai</label><select id="h_halSampai" onchange="updateJumlahHalaman()">${opts(20, dariDefault)}</select></div>
     </div>
     <p class="muted" id="h_jumlahInfo">Jumlah ditambahkan: 1 halaman</p>
-    <div class="btn-row"><button class="btn btn-accent" onclick="saveHafalan('${santriId}')">Simpan</button></div>
+    <div class="btn-row"><button class="btn btn-accent" onclick="saveHafalan('${santriId}','${kegiatanId}')">Simpan</button></div>
   `);
 }
 function updateJumlahHalaman(){
@@ -660,15 +747,73 @@ function updateJumlahHalaman(){
     info.style.color = '';
   }
 }
-async function saveHafalan(santriId){
+async function saveHafalan(santriId, kegiatanId){
   const dari = parseInt(val('h_halDari'));
   const sampai = parseInt(val('h_halSampai'));
   if(sampai < dari){ alert('Halaman "sampai" tidak boleh lebih kecil dari halaman "dari"'); return; }
+  const tanggal = val('h_tanggal');
   const { error } = await sb.from('hafalan').insert({
-    santri_id: santriId, tanggal: val('h_tanggal'), juz: parseInt(val('h_juz')),
-    halaman_dari: dari, halaman_sampai: sampai, dicatat_oleh: SESSION.nama || SESSION.email
+    santri_id: santriId, tanggal, juz: parseInt(val('h_juz')),
+    halaman_dari: dari, halaman_sampai: sampai, kegiatan_id: kegiatanId || null,
+    dicatat_oleh: SESSION.nama || SESSION.email
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
+  await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
+  await loadAll();
+  closeModal();
+  renderHafalanPage();
+}
+
+/* ---- Form Tipe B: Setoran 2 / Murojaah 1 / Murojaah 2 (mengulang hafalan lama) ---- */
+function openMurojaahForm(santriId, kegiatanId){
+  const s = DB.santri.find(x=>x.id===santriId);
+  const keg = DB.kegiatan.find(k=>k.id===kegiatanId);
+  const cur = juzSekarang(santriId);
+  const juzOpts = JUZ_ORDER.map(j=>`<option value="${j}" ${j===cur.juz?'selected':''}>Juz ${j}</option>`).join('');
+  showModal('Input '+(keg?keg.nama:'Murojaah')+' - '+s.nama, `
+    <label>Tanggal</label><input type="date" id="m_tanggal" value="${todayStr()}">
+    <label>Juz</label><select id="m_juz">${juzOpts}</select>
+    <label>Jumlah</label>
+    <select id="m_jumlah" onchange="updateMurojaahBagian()">
+      <option value="1">1 Juz</option>
+      <option value="1/2">1/2 Juz</option>
+      <option value="1/4">1/4 Juz</option>
+    </select>
+    <div id="m_bagianWrap" style="display:none">
+      <label>Bagian</label>
+      <select id="m_bagian"></select>
+    </div>
+    <div class="btn-row"><button class="btn btn-accent" onclick="saveMurojaah('${santriId}','${kegiatanId}')">Simpan</button></div>
+  `);
+  updateMurojaahBagian();
+}
+function updateMurojaahBagian(){
+  const jumlah = val('m_jumlah');
+  const wrap = document.getElementById('m_bagianWrap');
+  const sel = document.getElementById('m_bagian');
+  if(jumlah === '1'){ wrap.style.display = 'none'; sel.innerHTML = ''; return; }
+  wrap.style.display = '';
+  const n = jumlah === '1/2' ? 2 : 4;
+  sel.innerHTML = Array.from({length:n},(_,i)=>i+1).map(v=>`<option value="${v}">Bagian ${v}</option>`).join('');
+}
+async function saveMurojaah(santriId, kegiatanId){
+  const jumlah = val('m_jumlah');
+  const juz = parseInt(val('m_juz'));
+  const tanggal = val('m_tanggal');
+  let cakupan;
+  if(jumlah === '1'){
+    cakupan = '1 Juz';
+  } else {
+    const bagian = val('m_bagian');
+    if(!bagian){ alert('Pilih bagian terlebih dahulu.'); return; }
+    cakupan = (jumlah === '1/2' ? '1/2 Juz' : '1/4 Juz') + ' - Bagian ' + bagian;
+  }
+  const { error } = await sb.from('murojaah').insert({
+    santri_id: santriId, kegiatan_id: kegiatanId, tanggal, juz, cakupan,
+    dicatat_oleh: SESSION.nama || SESSION.email
+  });
+  if(error){ alert('Gagal menyimpan: ' + error.message); return; }
+  await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
   await loadAll();
   closeModal();
   renderHafalanPage();
@@ -760,7 +905,7 @@ function onHafalanScanSuccess(decodedText){
      TUNGGU sampai kamera benar-benar berhenti dulu (closeHafalanScanner
      bersifat async), supaya modal form tidak ikut tertutup belakangan. */
   setTimeout(()=>{
-    closeHafalanScanner(()=> openHafalanForm(s.id));
+    closeHafalanScanner(()=> openHafalanInputForm(s.id));
   }, 500);
 }
 
@@ -832,6 +977,7 @@ function renderRiwayatBody(){
   const santriId = riwayatSantriId;
   const { from, to } = periodeRange(riwayatPeriode);
   const hafalan = DB.hafalan.filter(h=>h.santriId===santriId && h.tanggal>=from && h.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
+  const murojaah = DB.murojaah.filter(m=>m.santriId===santriId && m.tanggal>=from && m.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
   const absensi = DB.absensi.filter(a=>a.santriId===santriId && a.tanggal>=from && a.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
   const statusLabel = {h:'Hadir', a:'Alpha', i:'Izin'};
   const namaKegiatan = kid => (DB.kegiatan.find(k=>k.id===kid)||{}).nama || '-';
@@ -867,8 +1013,14 @@ function renderRiwayatBody(){
     </div>
     <canvas id="chartSantriHafalan" width="600" height="180" style="width:100%;height:150px;margin-top:8px"></canvas>
     ${hafalan.length===0?'<p class="muted">Belum ada hafalan dicatat pada periode ini.</p>':`
-      <table><tr><th>Tanggal</th><th>Juz</th><th>Halaman</th></tr>
-      ${hafalan.map(h=>`<tr><td>${h.tanggal}</td><td>${h.juz}</td><td>${h.halamanDari===h.halamanSampai?h.halamanDari:h.halamanDari+'-'+h.halamanSampai}</td></tr>`).join('')}
+      <table><tr><th>Tanggal</th><th>Kegiatan</th><th>Juz</th><th>Halaman</th></tr>
+      ${hafalan.map(h=>`<tr><td>${h.tanggal}</td><td>${escapeHtml(namaKegiatan(h.kegiatanId))}</td><td>${h.juz}</td><td>${h.halamanDari===h.halamanSampai?h.halamanDari:h.halamanDari+'-'+h.halamanSampai}</td></tr>`).join('')}
+      </table>`}
+
+    <div class="section-heading">Riwayat Setoran 2 / Murojaah (periode ini)</div>
+    ${murojaah.length===0?'<p class="muted">Belum ada dicatat pada periode ini.</p>':`
+      <table><tr><th>Tanggal</th><th>Kegiatan</th><th>Juz</th><th>Cakupan</th></tr>
+      ${murojaah.map(m=>`<tr><td>${m.tanggal}</td><td>${escapeHtml(namaKegiatan(m.kegiatanId))}</td><td>${m.juz}</td><td>${escapeHtml(m.cakupan)}</td></tr>`).join('')}
       </table>`}
 
     <div class="section-heading">Riwayat Absensi (periode ini)</div>
