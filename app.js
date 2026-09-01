@@ -26,15 +26,23 @@ function escapeHtml(str){
 }
 
 /* ====== 2. MAPPING: nama kolom database <-> nama field aplikasi ====== */
-const STATUS_TO_DB = { h: 'Hadir', a: 'Alpha', i: 'Izin' };
-const STATUS_FROM_DB = { Hadir: 'h', Alpha: 'a', Izin: 'i', Sakit: 'a' };
+const STATUS_TO_DB = { h: 'Hadir', a: 'Alpha', i: 'Izin', hd: 'Haid' };
+const STATUS_FROM_DB = { Hadir: 'h', Alpha: 'a', Izin: 'i', Sakit: 'a', Haid: 'hd' };
 
 function santriRowToApp(r) {
   return {
     id: r.id, nama: r.nama, noInduk: r.no_induk,
     program: r.program || 'Non-Takhossus',
-    hafalanAwal: r.hafalan_awal || 0
+    hafalanAwal: r.hafalan_awal || 0,
+    jenisKelamin: r.jenis_kelamin || ''
   };
+}
+
+/* Santri perempuan -- dipakai untuk menampilkan tombol status "Haid" di
+   Absensi khusus untuk santri putri. Menerima format 'Perempuan' atau 'P'. */
+function isSantriPerempuan(s){
+  const jk = (s.jenisKelamin || '').toString().trim().toLowerCase();
+  return jk === 'p' || jk.startsWith('perempuan');
 }
 
 /* Total hafalan berjalan = hafalan awal (sebelum pakai aplikasi) + seluruh hafalan yang diinput lewat aplikasi.
@@ -68,7 +76,10 @@ function nilaiHafalanSantri(santriId, from, to){
   return { tambahan, target, hari, pct, predikat: predikatFromPct(pct) };
 }
 function nilaiAbsensiSantri(santriId, from, to){
-  const items = DB.absensi.filter(a=>a.santriId===santriId && a.tanggal>=from && a.tanggal<=to);
+  /* Status "Haid" dikecualikan total dari perhitungan persentase -- tidak
+     dihitung sebagai hadir maupun sebagai alpha/absen, supaya tidak
+     menurunkan nilai kehadiran santri putri yang sedang haid. */
+  const items = DB.absensi.filter(a=>a.santriId===santriId && a.tanggal>=from && a.tanggal<=to && a.status!=='hd');
   const hadir = items.filter(a=>a.status==='h').length;
   const pct = items.length ? Math.round(hadir/items.length*100) : 0;
   return { hadir, total: items.length, pct, predikat: predikatFromPct(pct) };
@@ -353,6 +364,25 @@ function initial(name){ return (name||'?').split(' ').map(w=>w[0]).slice(0,2).jo
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function val(id){ return document.getElementById(id).value; }
 
+/* Kegiatan yang boleh pakai status "Haid": semua kegiatan sholat (nama
+   diawali "Sholat" -- Subuh/Dzuhur/Ashar/Maghrib/Isya) dan kegiatan
+   "Setoran Bin Nadhor" (membaca mushaf, bukan dari hafalan). Kegiatan
+   hafalan/setoran lain (Setoran 1, Setoran 2, Murojaah 1/2) TIDAK termasuk
+   -- santri yang haid tetap wajib setor hafalan seperti biasa. */
+function bolehStatusHaid(keg){
+  if(!keg) return false;
+  const nama = (keg.nama||'').trim().toLowerCase();
+  return nama.startsWith('sholat') || nama === 'setoran bin nadhor';
+}
+
+/* Cek apakah santri sedang haid HARI INI -- dilihat dari ada tidaknya
+   catatan absensi berstatus "Haid" pada tanggal hari ini, di kegiatan
+   manapun (biasanya ditandai lewat salah satu kegiatan Sholat). */
+function santriSedangHaidHariIni(santriId){
+  const tgl = todayStr();
+  return DB.absensi.some(a=>a.santriId===santriId && a.tanggal===tgl && a.status==='hd');
+}
+
 /* ---------- ABSENSI ---------- */
 let absKegiatanId = null, absTanggal = todayStr();
 let absFilter = 'semua'; // semua | h | a | i | kosong
@@ -362,6 +392,7 @@ function renderAbsensiPage(){
   if(!absKegiatanId) absKegiatanId = DB.kegiatan[0]?.id;
   const kegAktif = DB.kegiatan.find(k=>k.id===absKegiatanId);
   const semuaSantri = visibleSantriForKegiatan(absKegiatanId);
+  const kegBolehHaid = bolehStatusHaid(kegAktif);
 
   /* status tiap santri untuk kegiatan+tanggal terpilih (kosong = belum diisi sama sekali) */
   const withStatus = semuaSantri.map(s=>{
@@ -372,6 +403,7 @@ function renderAbsensiPage(){
     h: withStatus.filter(x=>x.st==='h').length,
     a: withStatus.filter(x=>x.st==='a').length,
     i: withStatus.filter(x=>x.st==='i').length,
+    hd: withStatus.filter(x=>x.st==='hd').length,
     kosong: withStatus.filter(x=>x.st==='').length
   };
 
@@ -388,6 +420,7 @@ function renderAbsensiPage(){
     {key:'kosong', label:'Belum Diisi', count: jumlah.kosong},
     {key:'h', label:'Hadir', count: jumlah.h},
     {key:'i', label:'Izin', count: jumlah.i},
+    ...(kegBolehHaid ? [{key:'hd', label:'Haid', count: jumlah.hd}] : []),
     {key:'a', label:'Alpha', count: jumlah.a}
   ];
 
@@ -419,13 +452,16 @@ function renderAbsensiPage(){
           <span>${escapeHtml(s.nama)}</span>
           <div class="att-opts">
             <button class="att-btn h ${st==='h'?'on':''}" onclick="setAbsensi('${s.id}','h')">H</button>
-            <button class="att-btn a ${st==='a'?'on':''}" onclick="setAbsensi('${s.id}','a')">A</button>
             <button class="att-btn i ${st==='i'?'on':''}" onclick="setAbsensi('${s.id}','i')">I</button>
+            ${(kegBolehHaid && isSantriPerempuan(s)) ? `<button class="att-btn hd ${st==='hd'?'on':''}" onclick="setAbsensi('${s.id}','hd')" title="Haid">Hd</button>` : ''}
+            <button class="att-btn a ${st==='a'?'on':''}" onclick="setAbsensi('${s.id}','a')">A</button>
           </div>
         </div>`;
       }).join('')}
     </div>
-    <p class="muted">H = Hadir &middot; A = Tidak hadir/Alpha &middot; I = Izin. Sudah discan QR otomatis H, tap tombol I untuk yang izin/sakit.</p>
+    ${kegBolehHaid
+      ? '<p class="muted">H = Hadir &middot; I = Izin &middot; Hd = Haid (khusus santri putri, kegiatan sholat &amp; Setoran Bin Nadhor) &middot; A = Tidak hadir/Alpha. Sudah discan QR otomatis H, tap tombol I untuk yang izin/sakit.</p>'
+      : '<p class="muted">H = Hadir &middot; I = Izin &middot; A = Tidak hadir/Alpha. Sudah discan QR otomatis H, tap tombol I untuk yang izin/sakit.</p>'}
   `;
 }
 async function setAbsensi(santriId, status){
@@ -638,6 +674,16 @@ function filteredHafalanSantri(){
   });
 }
 
+/* Cek apakah santri sudah diinput hafalan/murojaah HARI INI untuk kegiatan
+   yang sedang dipilih -- dipakai untuk mencegah input double (tombol Input
+   dikunci) dan untuk menggeser santri yang sudah diinput ke bawah daftar. */
+function sudahInputHafalanHariIni(santriId, kegiatanId){
+  if(!kegiatanId) return false;
+  const tgl = todayStr();
+  return DB.hafalan.some(h=>h.santriId===santriId && h.kegiatanId===kegiatanId && h.tanggal===tgl)
+      || DB.murojaah.some(m=>m.santriId===santriId && m.kegiatanId===kegiatanId && m.tanggal===tgl);
+}
+
 /* Kalau kegiatan+tanggal+santri belum ada catatan absensi sama sekali,
    tandai otomatis Hadir begitu hafalan/murojaah-nya diinput -- supaya
    pembina tidak perlu isi absensi Setoran/Murojaah secara terpisah.
@@ -684,8 +730,13 @@ function renderHafalanPage(){
 
   const kegAktif = listKeg.find(k=>k.id===hafKegiatanId);
   const jenis = jenisKegiatanHafalan(kegAktif.nama); // 'tambah' | 'ulang'
+  const isSetoran1 = kegAktif.nama.trim().toLowerCase() === 'setoran 1';
   const programs = ['Takhossus', 'Non-Takhossus'];
-  const santri = filteredHafalanSantri();
+  /* Santri yang sudah diinput hari ini untuk kegiatan aktif digeser ke
+     bawah daftar (urutan sisanya tetap seperti semula -- sort stabil). */
+  const santri = filteredHafalanSantri()
+    .map(s=>({ s, sudah: sudahInputHafalanHariIni(s.id, hafKegiatanId), haid: isSetoran1 && santriSedangHaidHariIni(s.id) }))
+    .sort((a,b)=> (a.sudah===b.sudah) ? 0 : (a.sudah ? 1 : -1));
 
   document.getElementById('content').innerHTML = `
     <h2>Hafalan</h2>
@@ -711,18 +762,20 @@ function renderHafalanPage(){
       <button class="icon-btn-square" onclick="openHafalanScanner()" title="Scan QR Kartu Santri" aria-label="Scan QR Kartu Santri">&#128247;</button>
     </div>
     <div class="card">
-      ${santri.length===0?'<p class="muted">Tidak ada santri yang cocok.</p>':santri.map(s=>{
+      ${santri.length===0?'<p class="muted">Tidak ada santri yang cocok.</p>':santri.map(({s, sudah, haid})=>{
         const t = totalHafalanSantri(s.id);
-        const sub = jenis==='tambah'
+        let sub = jenis==='tambah'
           ? `Sedang: ${formatJuzSekarang(s.id)} &middot; <b>Total: ${t.juz} juz ${t.halaman} halaman</b>`
           : `Total hafalan berjalan: <b>${t.juz} juz ${t.halaman} halaman</b>`;
-        return `<div class="list-item">
+        if(haid) sub += ' <span class="badge-haid">&#9679; Haid &mdash; akan muroja\'ah 1/4 juz</span>';
+        if(sudah) sub += ' <span class="badge-done">&#10003; Sudah diinput hari ini</span>';
+        return `<div class="list-item ${sudah?'list-item-done':''}">
           <div class="avatar">${escapeHtml(initial(s.nama))}</div>
           <div style="flex:1">
             <div class="name">${escapeHtml(s.nama)}</div>
             <div class="sub">${sub}</div>
           </div>
-          <button class="btn btn-sm btn-accent" onclick="openHafalanInputForm('${s.id}')">Input</button>
+          <button class="btn btn-sm btn-accent" ${sudah?'disabled':''} onclick="openHafalanInputForm('${s.id}')">${sudah?'Tersimpan':'Input'}</button>
         </div>`;
       }).join('')}
     </div>
@@ -738,10 +791,18 @@ function renderHafalanPage(){
 }
 
 /* Dipanggil dari tombol Input maupun dari hasil scan QR -- membuka form yang
-   sesuai dengan kegiatan hafalan yang sedang dipilih di dropdown Kegiatan. */
+   sesuai dengan kegiatan hafalan yang sedang dipilih di dropdown Kegiatan.
+   Khusus kegiatan "Setoran 1": kalau santrinya sedang haid, dialihkan ke
+   form muroja'ah 1/4 juz (bukan tambah hafalan baru) -- dicatat ke tabel
+   `murojaah` dengan kegiatan_id tetap Setoran 1 supaya riwayatnya nyambung. */
 function openHafalanInputForm(santriId){
   const keg = DB.kegiatan.find(k=>k.id===hafKegiatanId);
   const jenis = jenisKegiatanHafalan(keg && keg.nama);
+  const namaKeg = (keg && keg.nama || '').trim().toLowerCase();
+  if(namaKeg === 'setoran 1' && santriSedangHaidHariIni(santriId)){
+    openMurojaahForm(santriId, hafKegiatanId, { presetJumlah: '1/4', catatanHaid: true });
+    return;
+  }
   if(jenis === 'ulang') openMurojaahForm(santriId, hafKegiatanId);
   else openHafalanForm(santriId, hafKegiatanId);
 }
@@ -795,21 +856,22 @@ async function saveHafalan(santriId, kegiatanId){
   renderHafalanPage();
 }
 
-/* ---- Form Tipe B: Setoran 2 / Murojaah 1 / Murojaah 2 (mengulang hafalan lama) ---- */
-function openMurojaahForm(santriId, kegiatanId){
+/* ---- Form Tipe B: Setoran 2 / Murojaah 1 / Murojaah 2 (mengulang hafalan lama) ----
+   opts.presetJumlah & opts.catatanHaid dipakai saat form ini dibuka sebagai
+   pengganti Setoran 1 untuk santri yang sedang haid (lihat openHafalanInputForm). */
+function openMurojaahForm(santriId, kegiatanId, opts){
+  opts = opts || {};
   const s = DB.santri.find(x=>x.id===santriId);
   const keg = DB.kegiatan.find(k=>k.id===kegiatanId);
   const cur = juzSekarang(santriId);
   const juzOpts = JUZ_ORDER.map(j=>`<option value="${j}" ${j===cur.juz?'selected':''}>Juz ${j}</option>`).join('');
-  showModal('Input '+(keg?keg.nama:'Murojaah')+' - '+s.nama, `
+  const jumlahOpts = ['1', '1/2', '1/4'].map(v=>`<option value="${v}" ${v===opts.presetJumlah?'selected':''}>${v==='1'?'1 Juz':v+' Juz'}</option>`).join('');
+  showModal('Input '+(opts.catatanHaid ? "Muroja'ah (pengganti Setoran 1)" : (keg?keg.nama:'Murojaah'))+' - '+s.nama, `
+    ${opts.catatanHaid ? '<p class="muted" style="margin:0 0 8px;color:var(--danger)">Santri sedang Haid &mdash; Setoran 1 diganti muroja\'ah, bukan menambah hafalan baru.</p>' : ''}
     <label>Tanggal</label><input type="date" id="m_tanggal" value="${todayStr()}">
     <label>Juz</label><select id="m_juz">${juzOpts}</select>
     <label>Jumlah</label>
-    <select id="m_jumlah" onchange="updateMurojaahBagian()">
-      <option value="1">1 Juz</option>
-      <option value="1/2">1/2 Juz</option>
-      <option value="1/4">1/4 Juz</option>
-    </select>
+    <select id="m_jumlah" onchange="updateMurojaahBagian()">${jumlahOpts}</select>
     <div id="m_bagianWrap" style="display:none">
       <label>Bagian</label>
       <select id="m_bagian"></select>
@@ -1094,7 +1156,8 @@ function drawSantriAbsensiChart(santriId, from, to){
   const s = DB.santri.find(x=>x.id===santriId);
   const kegiatanList = DB.kegiatan.filter(k=>!k.programKhusus || k.programKhusus===(s&&s.program));
   const rows = kegiatanList.map(k=>{
-    const items = DB.absensi.filter(a=>a.santriId===santriId && a.kegiatanId===k.id && a.tanggal>=from && a.tanggal<=to);
+    /* Status "Haid" dikecualikan dari perhitungan persentase per kegiatan juga. */
+    const items = DB.absensi.filter(a=>a.santriId===santriId && a.kegiatanId===k.id && a.tanggal>=from && a.tanggal<=to && a.status!=='hd');
     const hadir = items.filter(a=>a.status==='h').length;
     const pct = items.length ? Math.round(hadir/items.length*100) : 0;
     return { k, pct };
