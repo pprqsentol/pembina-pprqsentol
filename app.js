@@ -380,14 +380,22 @@ function renderNav(){
 }
 function goPage(p, opts){
   opts = opts || {};
+  /* Tanggal cuma direset ke hari ini kalau ini benar-benar PINDAH tab
+     (mis. dari Absensi ke Hafalan), BUKAN setiap kali tombol nav
+     ditekan. Sebelumnya, menekan tombol "Hafalan" lagi walau sudah
+     berada di tab itu (gampang kesenggol di HP) langsung menimpa balik
+     tanggal yang sudah diganti manual (mis. untuk mengisi data
+     kemarin) menjadi hari ini lagi. */
+  const gantiTab = (currentPage !== p);
   currentPage = p;
   document.querySelectorAll('.navitem').forEach(el=>el.classList.toggle('active', el.dataset.p===p));
-  /* Setiap kali tab Absensi/Hafalan dibuka (bukan cuma saat ganti tanggal
-     manual di dalam tab), tanggal selalu direset ke hari ini -- supaya
-     walau kemarin ada yang belum diisi, tampilan awal tetap langsung ke
-     hari ini. Tanggalnya tetap bisa diganti manual di dalam tab. */
-  if(p==='absensi'){ absTanggal = todayStr(); renderAbsensiPage(); }
-  if(p==='hafalan'){ hafTanggal = todayStr(); renderHafalanPage(); }
+  /* Saat pindah tab (bukan cuma saat ganti tanggal manual di dalam tab),
+     tanggal direset ke hari ini -- supaya walau kemarin ada yang belum
+     diisi, tampilan awal tetap langsung ke hari ini. Tanggalnya tetap
+     bisa diganti manual di dalam tab, dan tidak akan tertimpa lagi
+     selama masih di tab yang sama. */
+  if(p==='absensi'){ if(gantiTab) absTanggal = todayStr(); renderAbsensiPage(); }
+  if(p==='hafalan'){ if(gantiTab) hafTanggal = todayStr(); renderHafalanPage(); }
   if(p==='riwayat') renderRiwayatPage();
   /* Catat perpindahan tab ke riwayat browser, supaya tombol Kembali HP bisa
      dipakai untuk pindah ke tab sebelumnya (lihat blok "TOMBOL KEMBALI"
@@ -434,7 +442,25 @@ function visibleSantriForKegiatan(kegiatanId){
   return base.filter(s=>s.program===keg.programKhusus);
 }
 function initial(name){ return (name||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase(); }
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+/* Format sebuah objek Date menjadi teks tanggal YYYY-MM-DD menurut zona
+   waktu Asia/Jakarta (WIB) secara eksplisit -- BUKAN memakai toISOString()
+   yang selalu memakai UTC. Ini penting karena UTC tertinggal 7 jam dari
+   WIB: kalau dulu pakai toISOString(), setiap jam 00:00-06:59 WIB tanggal
+   yang dihasilkan masih tanggal KEMARIN (menurut UTC), padahal untuk
+   pembina di Indonesia "hari ini" seharusnya sudah berganti sejak
+   tengah malam WIB. Ini yang menyebabkan tanggal default "hari ini"
+   sering salah (mundur 1 hari) terutama pas Setoran 1 pagi hari,
+   sehingga pembina harus ganti tanggal manual, dan data yang disimpan
+   ikut tersimpan di tanggal yang salah (jadi kelihatan seperti "gagal
+   tersimpan" padahal sebenarnya tersimpan di tanggal kemarin).
+   Dipakai untuk SEMUA perhitungan tanggal "hari ini" di aplikasi ini. */
+function toJakartaDateStr(date){
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  return fmt.format(date); // format en-CA menghasilkan langsung YYYY-MM-DD
+}
+function todayStr(){ return toJakartaDateStr(new Date()); }
 function val(id){ return document.getElementById(id).value; }
 
 /* Kegiatan yang boleh pakai status "Haid": semua kegiatan sholat (nama
@@ -1161,7 +1187,7 @@ function periodeRange(periode){
   else if(periode==='pekan'){ from.setDate(now.getDate() - 7); }
   else if(periode==='bulan'){ from.setDate(now.getDate() - 30); }
   else if(periode==='tahun'){ from.setFullYear(now.getFullYear() - 1); }
-  return { from: from.toISOString().slice(0,10), to: now.toISOString().slice(0,10) };
+  return { from: toJakartaDateStr(from), to: toJakartaDateStr(now) };
 }
 function renderRiwayatPage(){
   const santri = visibleSantri();
