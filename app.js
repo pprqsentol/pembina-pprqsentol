@@ -378,7 +378,8 @@ function renderNav(){
   document.getElementById('bottomnav').innerHTML = html;
   document.getElementById('sidebar').innerHTML = html;
 }
-function goPage(p){
+function goPage(p, opts){
+  opts = opts || {};
   currentPage = p;
   document.querySelectorAll('.navitem').forEach(el=>el.classList.toggle('active', el.dataset.p===p));
   /* Setiap kali tab Absensi/Hafalan dibuka (bukan cuma saat ganti tanggal
@@ -388,6 +389,13 @@ function goPage(p){
   if(p==='absensi'){ absTanggal = todayStr(); renderAbsensiPage(); }
   if(p==='hafalan'){ hafTanggal = todayStr(); renderHafalanPage(); }
   if(p==='riwayat') renderRiwayatPage();
+  /* Catat perpindahan tab ke riwayat browser, supaya tombol Kembali HP bisa
+     dipakai untuk pindah ke tab sebelumnya (lihat blok "TOMBOL KEMBALI"
+     di bawah), bukan langsung menutup aplikasi. Dilewati kalau perpindahan
+     ini sendiri dipicu oleh tombol Kembali (fromPopstate), atau saat
+     refresh halaman yang sama (noPush), supaya tidak menumpuk riwayat
+     kosong yang percuma. */
+  if(!opts.fromPopstate && !opts.noPush) pushAppState({page: p});
 }
 
 /* Tombol "Refresh" di tab navigasi: ambil ulang data terbaru dari Supabase
@@ -406,7 +414,7 @@ async function refreshApp(){
       b.textContent = '\u26A0 Mode offline: menampilkan cadangan data terakhir. Tambah/ubah data tidak tersedia sampai internet kembali.';
       document.getElementById('app').prepend(b);
     }
-    goPage(currentPage);
+    goPage(currentPage, { noPush: true });
   } catch(e){
     console.error('Gagal refresh data:', e);
     alert('Gagal memuat data terbaru: ' + e.message);
@@ -1299,8 +1307,59 @@ function showModal(title, bodyHtml, onCloseFnCall){
       </div>
     </div>
   `;
+  /* Modal terbuka juga dicatat ke riwayat browser (lihat blok "TOMBOL
+     KEMBALI" di bawah), supaya kalau pembina menekan tombol Kembali HP
+     saat modal terbuka, yang tertutup cukup modal-nya saja -- bukan
+     langsung keluar dari aplikasi. */
+  pushAppState({modal: true, page: currentPage});
 }
-function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+function closeModal(){
+  const modalRoot = document.getElementById('modalRoot');
+  if(modalRoot.innerHTML.trim() === '') return;
+  modalRoot.innerHTML = '';
+  /* Modal ini ditutup lewat tombol X / tap di luar modal / setelah Simpan
+     -- BUKAN lewat tombol Kembali HP. Riwayat browser yang tadi dicatat
+     saat modal dibuka jadi "nyangkut" (tidak konsisten dengan tampilan),
+     jadi di sini kita bersihkan sendiri lewat history.back(). Ini memang
+     ikut memicu event 'popstate', tapi ditandai lewat suppressNextPopstate
+     supaya listener di bawah tidak memprosesnya dua kali. */
+  if(history.state && history.state.modal){
+    suppressNextPopstate = true;
+    history.back();
+  }
+}
+
+/* ---------- TOMBOL KEMBALI (HP/PWA) ----------
+   Aplikasi ini SPA satu halaman tanpa routing browser, jadi secara
+   default riwayat browser cuma berisi SATU entri -- begitu tombol
+   Kembali HP ditekan, langsung keluar dari aplikasi tanpa sempat
+   menutup modal atau pindah tab dulu. Supaya terasa wajar seperti
+   aplikasi pada umumnya:
+   - kalau ada modal terbuka -> tombol Kembali menutup modal saja.
+   - kalau sedang tidak di tab pertama (mis. di Riwayat/Hafalan) ->
+     tombol Kembali pindah ke tab pertama.
+   - kalau sudah di tab pertama tanpa modal -> baru tombol Kembali
+     benar-benar keluar dari aplikasi/PWA seperti biasa. */
+function pushAppState(extra){
+  try{ history.pushState(Object.assign({app:true}, extra||{}), ''); }catch(e){}
+}
+let suppressNextPopstate = false;
+window.addEventListener('popstate', function(){
+  if(suppressNextPopstate){ suppressNextPopstate = false; return; }
+  const modalRoot = document.getElementById('modalRoot');
+  if(modalRoot && modalRoot.innerHTML.trim() !== ''){
+    modalRoot.innerHTML = '';
+    return;
+  }
+  const nav = navForSession();
+  const defaultPage = nav[0] ? nav[0].id : null;
+  if(defaultPage && currentPage !== defaultPage){
+    goPage(defaultPage, { fromPopstate: true });
+  }
+  /* kalau sudah di tab pertama & tidak ada modal, tidak dilakukan
+     apa-apa di sini -- biarkan browser/OS menutup aplikasi seperti
+     tombol Kembali pada umumnya. */
+});
 
 /* ---------- INIT ---------- */
 initLogin();
