@@ -89,13 +89,13 @@ function nilaiAbsensiSantri(santriId, from, to){
    Kegiatan hafalan dikenali dari NAMA-nya (harus persis, tanpa memandang huruf besar/kecil)
    yang dibuat lewat Aplikasi Pondok -> Pengaturan -> Kegiatan:
    - 'tambah' (Setoran 1, Setoran Bin Nadhor): menambah hafalan baru, halaman lanjut otomatis, disimpan di tabel `hafalan`.
-   - 'ulang' (Setoran 2, Murojaah 1, Murojaah 2): mengulang hafalan lama (juz + cakupan), disimpan di tabel `murojaah`. */
+   - 'ulang' (Murojaah 1, Murojaah 2, Murojaah 3): mengulang hafalan lama (juz + cakupan), disimpan di tabel `murojaah`. */
 const HAFALAN_JENIS = {
   'setoran 1': 'tambah',
   'setoran bin nadhor': 'tambah',
-  'setoran 2': 'ulang',
   'murojaah 1': 'ulang',
-  'murojaah 2': 'ulang'
+  'murojaah 2': 'ulang',
+  'murojaah 3': 'ulang'
 };
 function jenisKegiatanHafalan(nama){
   return HAFALAN_JENIS[String(nama||'').trim().toLowerCase()] || null;
@@ -141,8 +141,8 @@ function formatJuzSekarang(santriId){
 }
 
 /* ====== Posisi Muroja'ah SAAT INI (untuk sesi berikutnya) ======
-   Sama prinsipnya seperti juzSekarang() di atas, tapi untuk Setoran 2 /
-   Murojaah 1 / Murojaah 2, dan dihitung TERPISAH per kegiatan (masing-masing
+   Sama prinsipnya seperti juzSekarang() di atas, tapi untuk Murojaah 1 /
+   Murojaah 2 / Murojaah 3, dan dihitung TERPISAH per kegiatan (masing-masing
    kegiatan punya progres sendiri, karena bisa beda cakupan/jadwal):
    - keterangan "Lancar" -> sesi berikutnya lanjut ke bagian berikutnya
      (kalau sudah bagian terakhir, lanjut ke Juz berikutnya, bagian 1).
@@ -440,7 +440,7 @@ function val(id){ return document.getElementById(id).value; }
 /* Kegiatan yang boleh pakai status "Haid": semua kegiatan sholat (nama
    diawali "Sholat" -- Subuh/Dzuhur/Ashar/Maghrib/Isya) dan kegiatan
    "Setoran Bin Nadhor" (membaca mushaf, bukan dari hafalan). Kegiatan
-   hafalan/setoran lain (Setoran 1, Setoran 2, Murojaah 1/2) TIDAK termasuk
+   hafalan/setoran lain (Setoran 1, Murojaah 1, Murojaah 2/3) TIDAK termasuk
    -- santri yang haid tetap wajib setor hafalan seperti biasa. */
 function bolehStatusHaid(keg){
   if(!keg) return false;
@@ -794,9 +794,9 @@ function renderHafalanPage(){
         <p class="muted">Belum ada kegiatan hafalan yang dikonfigurasi. Minta Admin Pusat menambahkan 5 kegiatan berikut lewat Aplikasi Pondok &rarr; Pengaturan &rarr; Kegiatan (ketik nama persis seperti ini):</p>
         <ul class="muted">
           <li>Setoran 1</li>
-          <li>Setoran 2</li>
           <li>Murojaah 1</li>
           <li>Murojaah 2</li>
+          <li>Murojaah 3</li>
           <li>Setoran Bin Nadhor</li>
         </ul>
       </div>
@@ -872,7 +872,7 @@ function renderHafalanPage(){
 /* Dipanggil dari tombol Input maupun dari hasil scan QR -- membuka form yang
    sesuai dengan kegiatan hafalan yang sedang dipilih di dropdown Kegiatan.
    Khusus kegiatan "Setoran 1": pembina memilih dulu Tambah Hafalan Baru atau
-   Mengulang Hafalan (format 1/1/2/1/4 Juz seperti Setoran 2 & Murojaah). */
+   Mengulang Hafalan (format 1/1/2/1/4 Juz seperti Murojaah). */
 function openHafalanInputForm(santriId){
   const keg = DB.kegiatan.find(k=>k.id===hafKegiatanId);
   const jenis = jenisKegiatanHafalan(keg && keg.nama);
@@ -964,7 +964,7 @@ async function saveHafalan(santriId, kegiatanId){
   renderHafalanPage();
 }
 
-/* ---- Form Tipe B: Setoran 2 / Murojaah 1 / Murojaah 2 (mengulang hafalan lama) ----
+/* ---- Form Tipe B: Murojaah 1 / Murojaah 2 / Murojaah 3 (mengulang hafalan lama) ----
    opts.presetJumlah & opts.catatanHaid dipakai saat form ini dibuka sebagai
    pengganti Setoran 1 untuk santri yang sedang haid (lihat openHafalanInputForm). */
 function openMurojaahForm(santriId, kegiatanId, opts){
@@ -1227,7 +1227,7 @@ function renderRiwayatBody(){
       ${hafalan.map(h=>`<tr><td>${h.tanggal}</td><td>${escapeHtml(namaKegiatan(h.kegiatanId))}</td><td>${h.juz}</td><td>${h.halamanDari===h.halamanSampai?h.halamanDari:h.halamanDari+'-'+h.halamanSampai}</td><td>${h.keterangan==='Ulang'?'<span style="color:var(--danger)">Ulang</span>':'Lancar'}</td></tr>`).join('')}
       </table>`}
 
-    <div class="section-heading">Riwayat Setoran 2 / Murojaah (periode ini)</div>
+    <div class="section-heading">Riwayat Murojaah (periode ini)</div>
     ${murojaah.length===0?'<p class="muted">Belum ada dicatat pada periode ini.</p>':`
       <table><tr><th>Tanggal</th><th>Kegiatan</th><th>Juz</th><th>Cakupan</th><th>Ket.</th></tr>
       ${murojaah.map(m=>`<tr><td>${m.tanggal}</td><td>${escapeHtml(namaKegiatan(m.kegiatanId))}</td><td>${m.juz}</td><td>${escapeHtml(m.cakupan)}</td><td>${m.keterangan==='Ulang'?'<span style="color:var(--danger)">Ulang</span>':'Lancar'}</td></tr>`).join('')}
