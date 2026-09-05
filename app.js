@@ -26,12 +26,12 @@ function escapeHtml(str){
 }
 
 /* ====== 2. MAPPING: nama kolom database <-> nama field aplikasi ====== */
-const STATUS_TO_DB = { h: 'Hadir', a: 'Alpha', i: 'Izin', hd: 'Haid' };
-const STATUS_FROM_DB = { Hadir: 'h', Alpha: 'a', Izin: 'i', Sakit: 'a', Haid: 'hd' };
+const STATUS_TO_DB = { h: 'Hadir', a: 'Alpha', i: 'Izin', s: 'Sakit', hd: 'Haid' };
+const STATUS_FROM_DB = { Hadir: 'h', Alpha: 'a', Izin: 'i', Sakit: 's', Haid: 'hd' };
 
 function santriRowToApp(r) {
   return {
-    id: r.id, nama: r.nama, noInduk: r.no_induk,
+    id: String(r.id), nama: r.nama, noInduk: r.no_induk,
     program: r.program || 'Non-Takhossus',
     hafalanAwal: r.hafalan_awal || 0,
     jenisKelamin: r.jenis_kelamin || ''
@@ -237,21 +237,30 @@ async function loadAll() {
       sb.from('murojaah').select('*')
     ]);
     if(kegiatanRes.error) throw kegiatanRes.error;
+    /* PENTING: semua id kegiatan/santri di-paksa jadi STRING di sini.
+       Sebabnya: id kegiatan dari Supabase bisa berupa angka (number),
+       sedangkan id yang dipilih lewat <select> di halaman (mis.
+       absKegiatanId=this.value / hafKegiatanId=this.value) SELALU berupa
+       teks (string). Kalau tidak disamakan, perbandingan "===" di
+       renderAbsensiPage/renderHafalanPage bisa gagal walau nilainya
+       sama (mis. 5 !== "5") begitu pembina pindah kegiatan lalu balik
+       lagi -- efeknya status Hadir/Izin/dst yang SUDAH tersimpan jadi
+       terlihat kosong lagi padahal datanya ada di database. */
     DB = {
-      kegiatan: (kegiatanRes.data || []).map(k => ({ id: k.id, nama: k.nama, programKhusus: k.program_khusus || null })),
+      kegiatan: (kegiatanRes.data || []).map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null })),
       santri: (santriRes.data || []).map(santriRowToApp),
       absensi: (absensiRes.data || []).map(a => ({
-        id: a.id, santriId: a.santri_id, kegiatanId: a.kegiatan_id, tanggal: a.tanggal,
+        id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal,
         status: STATUS_FROM_DB[a.status] || 'a'
       })),
       hafalan: (hafalanRes.data || []).map(h => ({
-        id: h.id, santriId: h.santri_id, tanggal: h.tanggal, juz: h.juz,
+        id: h.id, santriId: String(h.santri_id), tanggal: h.tanggal, juz: h.juz,
         halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
         jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
-        kegiatanId: h.kegiatan_id || null, keterangan: h.keterangan || 'Lancar'
+        kegiatanId: h.kegiatan_id!=null ? String(h.kegiatan_id) : null, keterangan: h.keterangan || 'Lancar'
       })),
       murojaah: (murojaahRes && !murojaahRes.error) ? (murojaahRes.data || []).map(m => ({
-        id: m.id, santriId: m.santri_id, kegiatanId: m.kegiatan_id, tanggal: m.tanggal,
+        id: m.id, santriId: String(m.santri_id), kegiatanId: String(m.kegiatan_id), tanggal: m.tanggal,
         juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar'
       })) : []
     };
@@ -364,6 +373,33 @@ function enterApp(){
   renderNav();
   const nav = navForSession();
   goPage(nav.some(i=>i.id===currentPage) ? currentPage : nav[0].id);
+  startAutoRefresh();
+}
+
+/* ---------- AUTO-REFRESH BERKALA ======
+   Sebelumnya aplikasi HANYA mengambil data terbaru dari Supabase saat:
+   login, tekan tombol Refresh, atau setelah pembina sendiri menyimpan
+   sesuatu. Kalau pembina A (mis. tugas Hafalan) menyimpan data, pembina B
+   (tugas Absensi) yang sedang membuka tab/kegiatan lain di HP-nya sendiri
+   TIDAK akan melihat perubahan itu sampai dia menekan Refresh manual --
+   inilah yang bikin data "kelihatan hilang/kosong" padahal sebenarnya
+   sudah tersimpan di database. Auto-refresh ini mengambil data terbaru
+   tiap 20 detik (kalau tab sedang aktif & tidak ada modal input yang
+   sedang terbuka, supaya tidak mengganggu pembina yang lagi mengetik). */
+let autoRefreshTimer = null;
+function startAutoRefresh(){
+  if(autoRefreshTimer) return;
+  autoRefreshTimer = setInterval(async ()=>{
+    if(!SESSION) return;
+    if(document.hidden) return; // tab/app sedang tidak aktif dilihat, hemat kuota
+    const modalRoot = document.getElementById('modalRoot');
+    if(modalRoot && modalRoot.innerHTML.trim() !== '') return; // ada modal input terbuka, jangan ganggu
+    try{
+      await loadAll();
+      if(currentPage==='absensi') renderAbsensiPage();
+      else if(currentPage==='hafalan') renderHafalanPage();
+    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 20 detik lagi):', e); }
+  }, 20000);
 }
 
 /* ---------- NAV ---------- */
@@ -493,6 +529,13 @@ function renderAbsensiPage(){
   const kegAktif = DB.kegiatan.find(k=>k.id===absKegiatanId);
   const semuaSantri = visibleSantriForKegiatan(absKegiatanId);
   const kegBolehHaid = bolehStatusHaid(kegAktif);
+  /* Kegiatan Setoran (1/Bin Nadhor) & Murojaah (1/2/3): Hadir SUDAH otomatis
+     terisi begitu pembina input hafalan/murojaah di tab Hafalan (lihat
+     tandaiHadirOtomatis()). Jadi di tab Absensi untuk kegiatan-kegiatan ini,
+     TIDAK ada tombol "H" -- pembina cukup mengisi yang TIDAK hadir saja
+     (Sakit/Izin/Alpha/Haid). Untuk kegiatan lain (Sekolah, Sholat, dll)
+     tetap seperti biasa: Hadir, Sakit, Izin, Alpha (+ Haid kalau berlaku). */
+  const kegHafalanMurojaah = !!jenisKegiatanHafalan(kegAktif && kegAktif.nama);
 
   /* status tiap santri untuk kegiatan+tanggal terpilih (kosong = belum diisi sama sekali) */
   const withStatus = semuaSantri.map(s=>{
@@ -503,6 +546,7 @@ function renderAbsensiPage(){
     h: withStatus.filter(x=>x.st==='h').length,
     a: withStatus.filter(x=>x.st==='a').length,
     i: withStatus.filter(x=>x.st==='i').length,
+    s: withStatus.filter(x=>x.st==='s').length,
     hd: withStatus.filter(x=>x.st==='hd').length,
     kosong: withStatus.filter(x=>x.st==='').length
   };
@@ -520,6 +564,7 @@ function renderAbsensiPage(){
     {key:'kosong', label:'Belum Diisi', count: jumlah.kosong},
     {key:'h', label:'Hadir', count: jumlah.h},
     {key:'i', label:'Izin', count: jumlah.i},
+    {key:'s', label:'Sakit', count: jumlah.s},
     ...(kegBolehHaid ? [{key:'hd', label:'Haid', count: jumlah.hd}] : []),
     {key:'a', label:'Alpha', count: jumlah.a}
   ];
@@ -534,8 +579,9 @@ function renderAbsensiPage(){
       <label>Tanggal</label>
       <input type="date" value="${absTanggal}" onchange="absTanggal=this.value; renderAbsensiPage()">
       ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
+      ${kegHafalanMurojaah ? `<p class="muted">Hadir otomatis terisi saat hafalan/murojaah diinput di tab Hafalan. Di sini cukup tandai santri yang <b>tidak</b> hadir (Sakit/Izin/Alpha).</p>` : ''}
       <div class="btn-row" style="margin-top:8px">
-        <button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>
+        ${kegHafalanMurojaah ? '' : `<button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>`}
         <button class="btn" onclick="tandaiSisanyaAlpha()">Tandai Sisanya Alpha</button>
       </div>
     </div>
@@ -551,8 +597,11 @@ function renderAbsensiPage(){
         return `<div class="att-row">
           <span>${escapeHtml(s.nama)}</span>
           <div class="att-opts">
-            <button class="att-btn h ${st==='h'?'on':''}" onclick="setAbsensi('${s.id}','h')">H</button>
+            ${kegHafalanMurojaah
+              ? (st==='h' ? '<span class="badge-done" style="margin-right:6px">&#10003; Hadir (otomatis)</span>' : '')
+              : `<button class="att-btn h ${st==='h'?'on':''}" onclick="setAbsensi('${s.id}','h')">H</button>`}
             <button class="att-btn i ${st==='i'?'on':''}" onclick="setAbsensi('${s.id}','i')">I</button>
+            <button class="att-btn s ${st==='s'?'on':''}" onclick="setAbsensi('${s.id}','s')">S</button>
             ${(kegBolehHaid && isSantriPerempuan(s)) ? `<button class="att-btn hd ${st==='hd'?'on':''}" onclick="setAbsensi('${s.id}','hd')" title="Haid">Hd</button>` : ''}
             <button class="att-btn a ${st==='a'?'on':''}" onclick="setAbsensi('${s.id}','a')">A</button>
           </div>
@@ -560,16 +609,24 @@ function renderAbsensiPage(){
       }).join('')}
     </div>
     ${kegBolehHaid
-      ? '<p class="muted">H = Hadir &middot; I = Izin &middot; Hd = Haid (khusus santri putri, kegiatan sholat &amp; Setoran Bin Nadhor) &middot; A = Tidak hadir/Alpha. Sudah discan QR otomatis H, tap tombol I untuk yang izin/sakit.</p>'
-      : '<p class="muted">H = Hadir &middot; I = Izin &middot; A = Tidak hadir/Alpha. Sudah discan QR otomatis H, tap tombol I untuk yang izin/sakit.</p>'}
+      ? '<p class="muted">H = Hadir &middot; I = Izin &middot; S = Sakit &middot; Hd = Haid (khusus santri putri, kegiatan sholat &amp; Setoran Bin Nadhor) &middot; A = Tidak hadir/Alpha.</p>'
+      : '<p class="muted">H = Hadir &middot; I = Izin &middot; S = Sakit &middot; A = Tidak hadir/Alpha.</p>'}
   `;
 }
 async function setAbsensi(santriId, status){
-  await sb.from('absensi').delete()
-    .eq('santri_id', santriId).eq('kegiatan_id', absKegiatanId).eq('tanggal', absTanggal);
-  const { error } = await sb.from('absensi').insert({
-    santri_id: santriId, kegiatan_id: absKegiatanId, tanggal: absTanggal, status: STATUS_TO_DB[status], dicatat_oleh: SESSION.nama || SESSION.email
-  });
+  /* Snapshot kegiatan+tanggal SAAT tombol ditekan (bukan baca variabel
+     global lagi di dalam fungsi async) -- supaya kalau pembina sempat
+     ganti dropdown/tanggal sebelum request ini selesai, data tetap
+     tersimpan untuk kegiatan+tanggal yang dimaksud saat tombol ditekan,
+     bukan yang sedang aktif belakangan.
+     Pakai upsert (bukan delete lalu insert) supaya satu kali panggilan
+     API saja dan tidak ada celah waktu di antara hapus & simpan --
+     didukung UNIQUE constraint (santri_id, kegiatan_id, tanggal) di
+     tabel absensi. */
+  const kegiatanId = absKegiatanId, tanggal = absTanggal;
+  const { error } = await sb.from('absensi').upsert({
+    santri_id: santriId, kegiatan_id: kegiatanId, tanggal, status: STATUS_TO_DB[status], dicatat_oleh: SESSION.nama || SESSION.email
+  }, { onConflict: 'santri_id,kegiatan_id,tanggal' });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await loadAll();
   renderAbsensiPage();
@@ -689,8 +746,17 @@ function onAbsensiScanSuccess(decodedText){
   absLastScan = { text: decodedText, time: now };
   absScanBusy = true;
 
+  /* Snapshot kegiatan+tanggal PERSIS saat kartu terdeteksi -- bukan
+     dibaca lagi nanti di dalam markHadirViaScan setelah request selesai.
+     Kalau tidak di-snapshot di sini, dan pembina/proses lain sempat
+     mengganti dropdown kegiatan/tanggal SEBELUM proses simpan (jaringan)
+     selesai, absen bisa salah tersimpan untuk kegiatan/tanggal yang baru
+     dipilih itu -- bukan yang sedang di-scan. Ini yang menyebabkan
+     "kok hilang lagi setelah ganti dropdown". */
+  const kegiatanId = absKegiatanId, tanggal = absTanggal;
+
   const kode = (decodedText||'').trim();
-  const santriList = visibleSantriForKegiatan(absKegiatanId);
+  const santriList = visibleSantriForKegiatan(kegiatanId);
   const s = santriList.find(x => x.noInduk === kode);
   const fb = document.getElementById('scanFeedback');
 
@@ -699,7 +765,7 @@ function onAbsensiScanSuccess(decodedText){
     setTimeout(()=>{ absScanBusy = false; }, 900);
     return;
   }
-  markHadirViaScan(s).then(ok=>{
+  markHadirViaScan(s, kegiatanId, tanggal).then(ok=>{
     if(fb){
       fb.className = ok ? 'scan-feedback ok' : 'scan-feedback err';
       fb.textContent = ok ? ('\u2713 Hadir dicatat: ' + s.nama) : ('Gagal menyimpan absen ' + s.nama + ', coba scan ulang.');
@@ -709,16 +775,18 @@ function onAbsensiScanSuccess(decodedText){
   });
 }
 
-async function markHadirViaScan(s){
+async function markHadirViaScan(s, kegiatanId, tanggal){
   try{
-    await sb.from('absensi').delete()
-      .eq('santri_id', s.id).eq('kegiatan_id', absKegiatanId).eq('tanggal', absTanggal);
-    const { error } = await sb.from('absensi').insert({
-      santri_id: s.id, kegiatan_id: absKegiatanId, tanggal: absTanggal, status: STATUS_TO_DB['h'], dicatat_oleh: SESSION.nama || SESSION.email
-    });
+    /* upsert = satu panggilan atomik, tidak ada celah waktu antara hapus
+       & simpan seperti pola delete-lalu-insert sebelumnya. Didukung
+       UNIQUE constraint (santri_id, kegiatan_id, tanggal) di tabel
+       absensi supaya tidak mungkin ada baris ganda. */
+    const { error } = await sb.from('absensi').upsert({
+      santri_id: s.id, kegiatan_id: kegiatanId, tanggal, status: STATUS_TO_DB['h'], dicatat_oleh: SESSION.nama || SESSION.email
+    }, { onConflict: 'santri_id,kegiatan_id,tanggal' });
     if(error) throw error;
-    DB.absensi = DB.absensi.filter(a => !(a.santriId===s.id && a.kegiatanId===absKegiatanId && a.tanggal===absTanggal));
-    DB.absensi.push({ santriId: s.id, kegiatanId: absKegiatanId, tanggal: absTanggal, status: 'h' });
+    DB.absensi = DB.absensi.filter(a => !(a.santriId===s.id && a.kegiatanId===kegiatanId && a.tanggal===tanggal));
+    DB.absensi.push({ santriId: s.id, kegiatanId, tanggal, status: 'h' });
     return true;
   } catch(e){
     console.warn('Gagal simpan absensi via scan:', e);
@@ -794,12 +862,22 @@ async function tandaiHadirOtomatis(santriId, kegiatanId, tanggal){
   if(!kegiatanId) return;
   const ada = DB.absensi.find(a=>a.santriId===santriId && a.kegiatanId===kegiatanId && a.tanggal===tanggal);
   if(ada) return;
+  /* Pakai upsert dengan ignoreDuplicates:true -- kalau ternyata SUDAH ada
+     baris (mis. race dengan aksi lain di device lain), biarkan status yang
+     sudah ada (jangan menimpa balik ke Hadir kalau sudah ditandai Izin/Sakit
+     dari device lain barusan). Errornya sekarang ditangkap DAN dilaporkan
+     ke pembina (bukan cuma console.warn) supaya tidak ada kejadian
+     "hafalan tersimpan tapi absennya diam-diam gagal tanpa disadari". */
   try{
-    await sb.from('absensi').insert({
+    const { error } = await sb.from('absensi').upsert({
       santri_id: santriId, kegiatan_id: kegiatanId, tanggal, status: STATUS_TO_DB['h'],
       dicatat_oleh: SESSION.nama || SESSION.email
-    });
-  }catch(e){ console.warn('Gagal menandai hadir otomatis:', e); }
+    }, { onConflict: 'santri_id,kegiatan_id,tanggal', ignoreDuplicates: true });
+    if(error) throw error;
+  }catch(e){
+    console.warn('Gagal menandai hadir otomatis:', e);
+    alert('Hafalan tersimpan, tapi absen otomatis Hadir gagal dicatat (' + (e.message||e) + '). Silakan tandai manual di tab Absensi.');
+  }
 }
 
 function renderHafalanPage(){
@@ -1215,7 +1293,7 @@ function renderRiwayatBody(){
   const hafalan = DB.hafalan.filter(h=>h.santriId===santriId && h.tanggal>=from && h.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
   const murojaah = DB.murojaah.filter(m=>m.santriId===santriId && m.tanggal>=from && m.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
   const absensi = DB.absensi.filter(a=>a.santriId===santriId && a.tanggal>=from && a.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
-  const statusLabel = {h:'Hadir', a:'Alpha', i:'Izin'};
+  const statusLabel = {h:'Hadir', a:'Alpha', i:'Izin', s:'Sakit', hd:'Haid'};
   const namaKegiatan = kid => (DB.kegiatan.find(k=>k.id===kid)||{}).nama || '-';
   const totalPeriode = hafalan.reduce((sum,h)=>sum+(h.jumlahHalaman||1),0);
   const t = totalHafalanSantri(santriId);

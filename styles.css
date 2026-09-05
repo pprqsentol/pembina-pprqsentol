@@ -142,6 +142,7 @@ th{color:var(--muted);font-weight:600;font-size:12px;}
 .att-btn.h.on{background:#2f7d4f;color:#fff;border-color:#2f7d4f;}
 .att-btn.a.on{background:#c0392b;color:#fff;border-color:#c0392b;}
 .att-btn.i.on{background:#d19a24;color:#fff;border-color:#d19a24;}
+.att-btn.s.on{background:#2980b9;color:#fff;border-color:#2980b9;}
 .att-btn.hd{font-size:11px;}
 .att-btn.hd.on{background:#8e44ad;color:#fff;border-color:#8e44ad;}
 
