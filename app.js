@@ -262,17 +262,59 @@ let SESSION = null; // { userId, role, program, nama }
       akan pernah menghapus balik data yang baru saja disimpan. */
 let dbRevision = 0;
 
+/* PENTING -- PENYEBAB BUG "absen yang barusan diisi hilang lagi kalau
+   pindah kegiatan lalu balik lagi":
+   Supabase/PostgREST SECARA DEFAULT membatasi setiap satu kali
+   select() maksimal 1000 baris -- TANPA mengembalikan error apa pun,
+   jadi kelihatan "adem ayem" walau datanya sebenarnya kepotong. Tabel
+   `absensi` (dan berpotensi `hafalan`/`murojaah`) gampang menembus 1000
+   baris kalau aplikasi sudah dipakai berbulan-bulan (banyak santri x
+   banyak kegiatan x banyak hari). Karena query di bawah tidak punya
+   ORDER BY, Postgres TIDAK menjamin baris mana yang ikut ke-return kalau
+   jumlahnya melebihi batas itu -- bisa beda-beda tiap kali fetch,
+   termasuk saat auto-refresh yang jalan otomatis tiap 20 detik
+   (startAutoRefresh). Kalau pembina sedang sibuk mengabsen banyak
+   santri (jadi makan waktu lebih dari 20 detik) dan kebetulan auto-
+   refresh lewat di tengah-tengah, absen yang BARU SAJA tersimpan hari
+   itu bisa saja jadi baris yang "kepotong" dari hasil fetch -- DB lokal
+   pun tertimpa data yang sudah tidak lengkap, sehingga waktu pindah
+   kegiatan lalu balik lagi, beberapa santri kelihatan kosong lagi
+   padahal di database Supabase datanya sudah benar & aman.
+   fetchAllRows() di bawah mengambil SEMUA baris dengan paginasi
+   (.range() per PAGE_SIZE baris, diulang sampai habis) supaya tidak ada
+   satupun baris yang kepotong walau tabelnya sudah besar. */
+const PAGE_SIZE = 1000;
+async function fetchAllRows(makeQuery){
+  let rows = [];
+  let from = 0;
+  while(true){
+    const { data, error } = await makeQuery().range(from, from + PAGE_SIZE - 1);
+    if(error) throw error;
+    rows = rows.concat(data || []);
+    if(!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return rows;
+}
+/* Untuk tabel yang memang boleh gagal/tidak ada tanpa membatalkan
+   seluruh loadAll() (mis. `murojaah` di instalasi lama yang belum
+   punya tabel ini) -- kembalikan array kosong saja kalau error,
+   jangan sampai melempar dan menggagalkan Promise.all di bawah. */
+async function fetchAllRowsSafe(makeQuery){
+  try { return await fetchAllRows(makeQuery); }
+  catch(e){ console.warn('fetchAllRowsSafe: gagal ambil data, pakai kosong:', e); return []; }
+}
+
 async function loadAll() {
   const revisionAtStart = dbRevision;
   try {
-    const [kegiatanRes, santriRes, absensiRes, hafalanRes, murojaahRes] = await Promise.all([
-      sb.from('kegiatan').select('*').eq('aktif', true).order('nama'),
-      sb.from('santri_umum').select('*').eq('aktif', true).order('nama'),
-      sb.from('absensi').select('*'),
-      sb.from('hafalan').select('*'),
-      sb.from('murojaah').select('*')
+    const [kegiatanData, santriData, absensiData, hafalanData, murojaahData] = await Promise.all([
+      fetchAllRows(()=> sb.from('kegiatan').select('*').eq('aktif', true).order('nama')),
+      fetchAllRows(()=> sb.from('santri_umum').select('*').eq('aktif', true).order('nama')),
+      fetchAllRows(()=> sb.from('absensi').select('*')),
+      fetchAllRows(()=> sb.from('hafalan').select('*')),
+      fetchAllRowsSafe(()=> sb.from('murojaah').select('*'))
     ]);
-    if(kegiatanRes.error) throw kegiatanRes.error;
     /* Kalau ada perubahan lain yang terjadi SELAMA fetch di atas berjalan
        (tap tombol H, scan, atau loadAll lain yang lebih baru sudah
        selesai duluan), data hasil fetch ini sudah basi -- lewati saja,
@@ -289,22 +331,22 @@ async function loadAll() {
        lagi -- efeknya status Hadir/Izin/dst yang SUDAH tersimpan jadi
        terlihat kosong lagi padahal datanya ada di database. */
     DB = {
-      kegiatan: (kegiatanRes.data || []).map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null })),
-      santri: (santriRes.data || []).map(santriRowToApp),
-      absensi: (absensiRes.data || []).map(a => ({
+      kegiatan: kegiatanData.map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null })),
+      santri: santriData.map(santriRowToApp),
+      absensi: absensiData.map(a => ({
         id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal,
         status: STATUS_FROM_DB[a.status] || 'a'
       })),
-      hafalan: (hafalanRes.data || []).map(h => ({
+      hafalan: hafalanData.map(h => ({
         id: h.id, santriId: String(h.santri_id), tanggal: h.tanggal, juz: h.juz,
         halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
         jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
         kegiatanId: h.kegiatan_id!=null ? String(h.kegiatan_id) : null, keterangan: h.keterangan || 'Lancar'
       })),
-      murojaah: (murojaahRes && !murojaahRes.error) ? (murojaahRes.data || []).map(m => ({
+      murojaah: murojaahData.map(m => ({
         id: m.id, santriId: String(m.santri_id), kegiatanId: String(m.kegiatan_id), tanggal: m.tanggal,
         juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar'
-      })) : []
+      }))
     };
     dbRevision++;
     OFFLINE_MODE = false;
