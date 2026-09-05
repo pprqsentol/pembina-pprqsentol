@@ -227,7 +227,43 @@ async function idbLoad(){
 let DB = { kegiatan: [], santri: [], absensi: [], hafalan: [], murojaah: [] };
 let SESSION = null; // { userId, role, program, nama }
 
+/* PENTING -- PENYEBAB BUG "beberapa santri tidak bisa diabsen H" (scan
+   maupun manual):
+   Aplikasi ini punya BEBERAPA sumber yang bisa memanggil loadAll() secara
+   independen dan hampir bersamaan: auto-refresh tiap 20 detik
+   (startAutoRefresh), tombol Refresh manual, DAN dulu setAbsensi()/
+   tandaiSisanyaAlpha() juga ikut memanggil loadAll() setelah menyimpan.
+   Semua panggilan itu sama-sama melakukan `DB = {...}` yaitu MENIMPA
+   TOTAL seluruh isi DB dengan hasil fetch masing-masing.
+   Kalau pembina men-tap tombol H untuk beberapa santri berturut-turut
+   dengan cepat (persis yang terjadi saat absen sholat berjamaah, mis.
+   Sholat Ashar, karena banyak santri diproses dalam waktu singkat),
+   beberapa request loadAll() bisa berjalan tumpang-tindih. Kalau salah
+   satu request yang datanya lebih LAMA/basi kebetulan SELESAI belakangan
+   (network tidak selalu sampai berurutan), hasilnya yang basi itu akan
+   menimpa balik status H yang baru saja berhasil tersimpan -- padahal di
+   database Supabase datanya SUDAH benar. Inilah yang membuat seolah-olah
+   "dipencet H tidak bisa" walau sebenarnya sempat tersimpan lalu hilang
+   lagi dari tampilan.
+   Perbaikannya dua lapis:
+   1) setAbsensi/tandaiSisanyaAlpha/markHadirViaScan sekarang menandai
+      status di DB.absensi secara LANGSUNG begitu server konfirmasi
+      berhasil (tidak lagi memanggil loadAll() ulang) -- lihat fungsi
+      masing-masing di bagian ABSENSI.
+   2) loadAll() di bawah ini diberi "dbRevision" -- setiap kali DB
+      berubah (baik lewat loadAll yang berhasil, maupun lewat penanda
+      langsung di atas), dbRevision bertambah. Setiap panggilan loadAll()
+      mencatat nilai dbRevision SAAT ia mulai fetch; kalau ternyata sudah
+      ada perubahan lain (dbRevision berbeda) pada saat fetch itu selesai,
+      berarti data yang baru didapat ini sudah KETINGGALAN dibanding apa
+      yang sedang tampil, jadi HASILNYA DIABAIKAN (tidak menimpa DB) --
+      auto-refresh/refresh berikutnya akan mengambil data terbaru lagi
+      seperti biasa. Dengan begitu, refresh yang datang belakangan tidak
+      akan pernah menghapus balik data yang baru saja disimpan. */
+let dbRevision = 0;
+
 async function loadAll() {
+  const revisionAtStart = dbRevision;
   try {
     const [kegiatanRes, santriRes, absensiRes, hafalanRes, murojaahRes] = await Promise.all([
       sb.from('kegiatan').select('*').eq('aktif', true).order('nama'),
@@ -237,6 +273,12 @@ async function loadAll() {
       sb.from('murojaah').select('*')
     ]);
     if(kegiatanRes.error) throw kegiatanRes.error;
+    /* Kalau ada perubahan lain yang terjadi SELAMA fetch di atas berjalan
+       (tap tombol H, scan, atau loadAll lain yang lebih baru sudah
+       selesai duluan), data hasil fetch ini sudah basi -- lewati saja,
+       jangan menimpa DB. Lihat catatan panjang di atas deklarasi
+       dbRevision. */
+    if(dbRevision !== revisionAtStart) return;
     /* PENTING: semua id kegiatan/santri di-paksa jadi STRING di sini.
        Sebabnya: id kegiatan dari Supabase bisa berupa angka (number),
        sedangkan id yang dipilih lewat <select> di halaman (mis.
@@ -264,13 +306,17 @@ async function loadAll() {
         juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar'
       })) : []
     };
+    dbRevision++;
     OFFLINE_MODE = false;
     idbSave(DB);
   } catch(e){
+    if(dbRevision !== revisionAtStart) return; // sudah ketinggalan, jangan timpa dengan cadangan offline juga
     console.warn('Gagal ambil data dari Supabase, coba pakai cadangan offline:', e);
     const cadangan = await idbLoad();
+    if(dbRevision !== revisionAtStart) return;
     if(cadangan){
       DB = cadangan;
+      dbRevision++;
       OFFLINE_MODE = true;
     } else {
       throw e;
@@ -628,7 +674,23 @@ async function setAbsensi(santriId, status){
     santri_id: santriId, kegiatan_id: kegiatanId, tanggal, status: STATUS_TO_DB[status], dicatat_oleh: SESSION.nama || SESSION.email
   }, { onConflict: 'santri_id,kegiatan_id,tanggal' });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await loadAll();
+  /* Tandai langsung di DB lokal (BUKAN loadAll() ulang) begitu server
+     konfirmasi berhasil. Sebelumnya di sini dipanggil `await loadAll()`
+     yang mengambil ULANG seluruh data dari Supabase lalu menimpa total
+     DB -- kalau pembina men-tap H untuk beberapa santri berturut-turut
+     dengan cepat (mis. absen Sholat Ashar), beberapa loadAll() itu bisa
+     tumpang-tindih dan yang datanya lebih basi kadang selesai belakangan,
+     sehingga menimpa balik status H yang baru saja tersimpan (padahal di
+     database sudah benar) -- kelihatan seperti "dipencet H tidak bisa".
+     Dengan menandai langsung di sini, status baru LANGSUNG konsisten
+     dengan yang baru saja dikonfirmasi berhasil oleh server, tidak
+     bergantung pada round-trip fetch lain yang urutannya tidak terjamin.
+     dbRevision++ supaya loadAll() lain yang kebetulan sedang berjalan
+     (auto-refresh dsb) tahu datanya sudah ketinggalan dan tidak menimpa
+     balik (lihat dbRevision di loadAll()). */
+  DB.absensi = DB.absensi.filter(a => !(a.santriId===santriId && a.kegiatanId===kegiatanId && a.tanggal===tanggal));
+  DB.absensi.push({ santriId, kegiatanId, tanggal, status });
+  dbRevision++;
   renderAbsensiPage();
 }
 
@@ -637,25 +699,54 @@ async function setAbsensi(santriId, status){
    Santri yang sudah H atau I tidak diubah. Setelah ini pembina tinggal
    pakai filter "Alpha" lalu tap tombol I untuk yang ternyata izin/sakit. */
 async function tandaiSisanyaAlpha(){
-  const semuaSantri = visibleSantriForKegiatan(absKegiatanId);
-  const belumDiisi = semuaSantri.filter(s => !DB.absensi.find(a=>a.santriId===s.id && a.kegiatanId===absKegiatanId && a.tanggal===absTanggal));
+  /* Snapshot juga di sini, sama seperti di setAbsensi(), supaya konsisten
+     dipakai baik untuk query maupun untuk menandai DB lokal di bawah. */
+  const kegiatanId = absKegiatanId, tanggal = absTanggal;
+  const semuaSantri = visibleSantriForKegiatan(kegiatanId);
+  const belumDiisi = semuaSantri.filter(s => !DB.absensi.find(a=>a.santriId===s.id && a.kegiatanId===kegiatanId && a.tanggal===tanggal));
   if(belumDiisi.length===0){ alert('Semua santri sudah memiliki catatan absensi untuk kegiatan & tanggal ini.'); return; }
   if(!confirm(`Tandai ${belumDiisi.length} santri yang belum diisi sebagai Alpha?`)) return;
   const rows = belumDiisi.map(s => ({
-    santri_id: s.id, kegiatan_id: absKegiatanId, tanggal: absTanggal, status: STATUS_TO_DB['a'], dicatat_oleh: SESSION.nama || SESSION.email
+    santri_id: s.id, kegiatan_id: kegiatanId, tanggal, status: STATUS_TO_DB['a'], dicatat_oleh: SESSION.nama || SESSION.email
   }));
   const { error } = await sb.from('absensi').insert(rows);
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await loadAll();
+  /* Tandai langsung di DB lokal (bukan loadAll() ulang) -- alasan sama
+     persis seperti di setAbsensi(): supaya tidak ada celah waktu yang
+     bisa ditimpa balik oleh refresh lain yang datanya lebih basi. */
+  belumDiisi.forEach(s => DB.absensi.push({ santriId: s.id, kegiatanId, tanggal, status: 'a' }));
+  dbRevision++;
   absFilter = 'a';
   renderAbsensiPage();
 }
 
 /* ---------- ABSENSI: SCAN QR KARTU SANTRI ---------- */
 let absScanner = null;
-let absScanBusy = false;
 let absLastScan = { text: '', time: 0 };
 let absTorchOn = false;
+
+/* PENTING -- INI PENYEBAB UTAMA "discan kebaca tapi tidak bisa absen H"
+   saat santri bergilir cepat menaruh kartu di depan kamera (mis. antre
+   pas Sholat Ashar):
+   Versi sebelumnya pakai SATU variabel `absScanBusy` yang memblokir
+   TOTAL kartu santri BERIKUTNYA selama proses simpan (upsert ke
+   Supabase) kartu SEBELUMNYA belum selesai, ditambah jeda 900ms lagi
+   setelah itu. Kalau koneksi sedang agak lambat (wajar kalau banyak HP
+   dipakai bersamaan saat sholat berjamaah) dan santri berikutnya sudah
+   menaruh kartunya SAAT proses simpan kartu sebelumnya masih berjalan,
+   kamera TETAP membaca QR-nya dengan benar, tapi kode di
+   onAbsensiScanSuccess langsung `return` di baris paling atas karena
+   absScanBusy masih true -- kartu itu DIBUANG TOTAL, tanpa pesan
+   berhasil maupun gagal sama sekali. Santri itu jadi kelihatan
+   "gak keabsen" walau kartunya sebenarnya sempat terbaca sempurna.
+   Perbaikannya: setiap kartu yang kameranya berhasil membaca & cocok
+   dengan data santri sekarang dimasukkan ke ANTRIAN (absScanQueue) dan
+   PASTI diproses satu per satu secara berurutan oleh
+   processAbsScanQueue() -- tidak ada kartu yang diam-diam dibuang lagi,
+   walau santri berikutnya sudah menaruh kartu sebelum proses simpan
+   kartu sebelumnya selesai. */
+let absScanQueue = [];
+let absScanProcessing = false;
 
 function openAbsensiScanner(){
   if(!absKegiatanId){ alert('Pilih kegiatan terlebih dahulu.'); return; }
@@ -741,10 +832,13 @@ function playScanSuccessFeedback(){
 
 function onAbsensiScanSuccess(decodedText){
   const now = Date.now();
-  if(absScanBusy) return;
+  /* Debounce ini HANYA untuk mencegah SATU kartu yang sama terus-menerus
+     terbaca berkali-kali selagi masih ditaruh di depan kamera (kamera
+     mencoba membaca 10x/detik) -- BUKAN untuk memblokir kartu santri
+     LAIN yang menyusul. Kartu santri lain yang berbeda selalu diteruskan
+     ke antrian di bawah, apa pun status proses kartu sebelumnya. */
   if(decodedText === absLastScan.text && (now - absLastScan.time) < 2500) return;
   absLastScan = { text: decodedText, time: now };
-  absScanBusy = true;
 
   /* Snapshot kegiatan+tanggal PERSIS saat kartu terdeteksi -- bukan
      dibaca lagi nanti di dalam markHadirViaScan setelah request selesai.
@@ -758,21 +852,44 @@ function onAbsensiScanSuccess(decodedText){
   const kode = (decodedText||'').trim();
   const santriList = visibleSantriForKegiatan(kegiatanId);
   const s = santriList.find(x => x.noInduk === kode);
-  const fb = document.getElementById('scanFeedback');
 
   if(!s){
+    const fb = document.getElementById('scanFeedback');
     if(fb){ fb.className = 'scan-feedback err'; fb.textContent = 'QR tidak dikenali / bukan kartu santri untuk kegiatan ini.'; }
-    setTimeout(()=>{ absScanBusy = false; }, 900);
     return;
   }
-  markHadirViaScan(s, kegiatanId, tanggal).then(ok=>{
+
+  /* Masukkan ke antrian, JANGAN diproses langsung di sini -- supaya kartu
+     santri berikutnya yang menyusul tetap tercatat dalam antrian walau
+     proses simpan kartu sebelumnya (request ke Supabase) belum selesai.
+     Lihat catatan panjang di deklarasi absScanQueue di atas. */
+  absScanQueue.push({ s, kegiatanId, tanggal });
+  processAbsScanQueue();
+}
+
+/* Memproses antrian kartu satu per satu SECARA BERURUTAN (bukan
+   bersamaan), supaya urutan simpan tetap rapi dan tidak membanjiri
+   Supabase dengan banyak request sekaligus -- tapi tidak ada satupun
+   kartu yang terlewat/terbuang walau santri menaruh kartu berikutnya
+   sebelum kartu sebelumnya selesai disimpan. Aman dipanggil berkali-kali
+   (mis. tiap ada kartu baru masuk antrian): kalau sudah ada proses yang
+   jalan, panggilan berikutnya cukup `return` karena while-loop yang
+   sedang berjalan akan otomatis lanjut mengambil antrian berikutnya. */
+async function processAbsScanQueue(){
+  if(absScanProcessing) return;
+  absScanProcessing = true;
+  const fb = document.getElementById('scanFeedback');
+  while(absScanQueue.length){
+    const { s, kegiatanId, tanggal } = absScanQueue.shift();
+    if(fb){ fb.className = 'scan-feedback'; fb.textContent = 'Menyimpan absen ' + s.nama + '\u2026'; }
+    const ok = await markHadirViaScan(s, kegiatanId, tanggal);
     if(fb){
       fb.className = ok ? 'scan-feedback ok' : 'scan-feedback err';
       fb.textContent = ok ? ('\u2713 Hadir dicatat: ' + s.nama) : ('Gagal menyimpan absen ' + s.nama + ', coba scan ulang.');
     }
     if(ok) playScanSuccessFeedback();
-    setTimeout(()=>{ absScanBusy = false; }, 900);
-  });
+  }
+  absScanProcessing = false;
 }
 
 async function markHadirViaScan(s, kegiatanId, tanggal){
@@ -787,6 +904,12 @@ async function markHadirViaScan(s, kegiatanId, tanggal){
     if(error) throw error;
     DB.absensi = DB.absensi.filter(a => !(a.santriId===s.id && a.kegiatanId===kegiatanId && a.tanggal===tanggal));
     DB.absensi.push({ santriId: s.id, kegiatanId, tanggal, status: 'h' });
+    /* dbRevision++ di sini juga -- supaya loadAll() (auto-refresh 20 detik
+       dsb) yang kebetulan sedang berjalan bersamaan saat pembina scan
+       tahu datanya sudah ketinggalan begitu scan ini selesai, dan tidak
+       menimpa balik status Hadir yang baru saja tercatat. Lihat catatan
+       lengkap di dbRevision/loadAll(). */
+    dbRevision++;
     return true;
   } catch(e){
     console.warn('Gagal simpan absensi via scan:', e);
@@ -811,7 +934,12 @@ function closeAbsensiScanner(){
   const finish = ()=>{
     absScanner = null;
     absTorchOn = false;
-    absScanBusy = false;
+    /* Kosongkan antrian & tandai tidak sedang memproses -- kalau ditutup
+       tengah-tengah proses antrian, sisa kartu yang belum sempat diproses
+       tidak akan otomatis lanjut diam-diam setelah modal ditutup (kalau
+       pembina buka scanner lagi nanti, itu awal antrian yang baru). */
+    absScanQueue = [];
+    absScanProcessing = false;
     closeModal();
     renderAbsensiPage();
   };
