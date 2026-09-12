@@ -71,6 +71,7 @@ button{cursor:pointer;font-family:inherit;}
 .list-item-done{opacity:.55;}
 .badge-done{color:var(--green-600);font-weight:600;}
 .badge-haid{color:#8e44ad;font-weight:600;}
+.badge-testpending{color:var(--danger);font-weight:600;}
 .btn[disabled]{opacity:.5;cursor:not-allowed;}
 .avatar{width:38px;height:38px;border-radius:50%;background:var(--green-100);color:var(--green-700);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;object-fit:cover;}
 .list-item .name{font-weight:600;font-size:14px;}
