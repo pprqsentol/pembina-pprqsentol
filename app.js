@@ -356,10 +356,10 @@ async function loadAll() {
   try {
     const [kegiatanData, santriData, absensiData, hafalanData, murojaahData, idadData, tesJuzData] = await Promise.all([
       fetchAllRows(()=> sb.from('kegiatan').select('*').eq('aktif', true).order('nama')),
-      fetchAllRows(()=> sb.from('santri_umum').select('*').eq('aktif', true).order('nama')),
-      fetchAllRows(()=> sb.from('absensi').select('*')),
-      fetchAllRows(()=> sb.from('hafalan').select('*')),
-      fetchAllRowsSafe(()=> sb.from('murojaah').select('*')),
+      fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama')),
+      fetchAllRows(()=> sb.from('absensi').select('id,santri_id,kegiatan_id,tanggal,status')),
+      fetchAllRows(()=> sb.from('hafalan').select('id,santri_id,tanggal,juz,halaman_dari,halaman_sampai,kegiatan_id,keterangan')),
+      fetchAllRowsSafe(()=> sb.from('murojaah').select('id,santri_id,kegiatan_id,tanggal,juz,cakupan,keterangan')),
       fetchAllRowsSafe(()=> sb.from('idad').select('*')),
       fetchAllRowsSafe(()=> sb.from('tes_kenaikan_juz').select('*'))
     ]);
@@ -545,7 +545,7 @@ function startAutoRefresh(){
       if(currentPage==='absensi') renderAbsensiPage();
       else if(currentPage==='hafalan') renderHafalanPage();
     }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 20 detik lagi):', e); }
-  }, 20000);
+  }, 120000);
 }
 
 /* ---------- NAV ---------- */
