@@ -6,8 +6,8 @@
 /* ====== 1. KONFIGURASI SUPABASE ======
    Isi dua baris di bawah ini dengan Project URL dan Publishable Key
    dari Supabase (Settings -> API Keys) -- SAMA seperti punya Aplikasi Pondok. */
-const SUPABASE_URL = 'https://zbgajdzisrhjzerisadv.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_fq2m6Avcq_cGLrBxdbVaJA_YZ8iaiBN';
+const SUPABASE_URL = 'https://liivvueodribjwipmbrl.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_KKSw-wparSwNbIvR9wHhyQ_Pc1NdcKG';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -355,13 +355,13 @@ async function loadAll() {
   const revisionAtStart = dbRevision;
   try {
     const [kegiatanData, santriData, absensiData, hafalanData, murojaahData, idadData, tesJuzData] = await Promise.all([
-      fetchAllRows(()=> sb.from('kegiatan').select('*').eq('aktif', true).order('nama')),
+      fetchAllRows(()=> sb.from('kegiatan').select('id,nama,program_khusus').eq('aktif', true).order('nama')),
       fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama')),
       fetchAllRows(()=> sb.from('absensi').select('id,santri_id,kegiatan_id,tanggal,status')),
       fetchAllRows(()=> sb.from('hafalan').select('id,santri_id,tanggal,juz,halaman_dari,halaman_sampai,kegiatan_id,keterangan')),
       fetchAllRowsSafe(()=> sb.from('murojaah').select('id,santri_id,kegiatan_id,tanggal,juz,cakupan,keterangan')),
-      fetchAllRowsSafe(()=> sb.from('idad').select('*')),
-      fetchAllRowsSafe(()=> sb.from('tes_kenaikan_juz').select('*'))
+      fetchAllRowsSafe(()=> sb.from('idad').select('id,santri_id,kegiatan_id,tanggal,metode,catatan')),
+      fetchAllRowsSafe(()=> sb.from('tes_kenaikan_juz').select('id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan'))
     ]);
     /* Kalau ada perubahan lain yang terjadi SELAMA fetch di atas berjalan
        (tap tombol H, scan, atau loadAll lain yang lebih baru sudah
@@ -447,7 +447,7 @@ let currentPage = 'absensi';
    TIDAK dibatasi per program -- semua santri terlihat. */
 
 async function loadSessionFromAuth(user) {
-  const { data, error } = await sb.from('profil_akun').select('*').eq('id', user.id).single();
+  const { data, error } = await sb.from('profil_akun').select('nama,tugas,role').eq('id', user.id).single();
   if (error || !data) throw error || new Error('Profil akun tidak ditemukan.');
   return { userId: user.id, email: user.email, nama: data.nama, tugas: data.tugas, role: data.role };
 }
