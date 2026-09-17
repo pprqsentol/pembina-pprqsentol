@@ -1,4 +1,4 @@
-const CACHE = 'pembina-rq-v8';
+const CACHE = 'pembina-rq-v9';
 const FILES = [
   './',
   './index.html',
