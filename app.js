@@ -6,8 +6,8 @@
 /* ====== 1. KONFIGURASI SUPABASE ======
    Isi dua baris di bawah ini dengan Project URL dan Publishable Key
    dari Supabase (Settings -> API Keys) -- SAMA seperti punya Aplikasi Pondok. */
-const SUPABASE_URL = 'https://hvivddbhacoppkbtiqpe.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_BTFxSTrt1vM1seoQaXG_7g_mqYo5aqq';
+const SUPABASE_URL = 'https://zbgajdzisrhjzerisadv.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_fq2m6Avcq_cGLrBxdbVaJA_YZ8iaiBN';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
