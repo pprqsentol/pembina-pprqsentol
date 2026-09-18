@@ -233,7 +233,16 @@ function formatMurojaahSekarang(santriId, kegiatanId){
   return `Juz ${c.juz}, ${cakupanLabel}`;
 }
 
-/* ====== 3b. INDEXEDDB (cadangan offline, bukan server utama) ====== */
+/* ====== 3b. INDEXEDDB (cache lokal persisten, DIPAKAI SEBAGAI SUMBER
+   UTAMA sebelum sync, bukan cuma cadangan offline) ======
+   Sebelumnya IndexedDB cuma dibaca kalau fetch ke Supabase GAGAL total
+   (offline). Sekarang cadangan ini juga dibaca DULUAN begitu loadAll()
+   pertama kali dipanggil di sebuah sesi -- isinya {DB, syncMeta}, bukan
+   cuma DB -- supaya syncMeta (kapan tiap tabel terakhir disync) ikut
+   terbawa. Efeknya: begitu HP pembina pernah login & sync sekali, SEMUA
+   loadAll() berikutnya (termasuk yang pertama di sesi/hari berikutnya)
+   langsung jadi DELTA SYNC, bukan LOAD ALL lagi -- lihat loadAll() &
+   fetchRowsSince() di bawah. */
 const IDB_NAME = 'pembinaDB';
 const IDB_STORE = 'cadangan';
 let OFFLINE_MODE = false;
@@ -268,9 +277,31 @@ async function idbLoad(){
     });
   } catch(e){ console.warn('Gagal baca cadangan offline:', e); return null; }
 }
+/* Cadangan lama (sebelum fitur delta sync ini) menyimpan DB apa adanya
+   (objek dengan properti .kegiatan/.santri/dst), BUKAN {DB, syncMeta}.
+   Fungsi ini menerima dua bentuk itu supaya pembina yang sudah pernah
+   pakai versi aplikasi sebelumnya tidak kehilangan cadangannya waktu
+   update -- kalau bentuknya lama, syncMeta mulai kosong lagi (artinya
+   sync berikutnya otomatis full sekali, lalu delta seterusnya seperti
+   biasa, tidak masalah). */
+function terapkanCadangan(cadangan){
+  if(!cadangan) return false;
+  if(Array.isArray(cadangan.kegiatan)){ DB = cadangan; syncMeta = {}; return true; }
+  if(cadangan.DB){ DB = cadangan.DB; syncMeta = cadangan.syncMeta || {}; return true; }
+  return false;
+}
 
 /* ====== 3. STATE APLIKASI (diisi dari Supabase setelah login) ====== */
 let DB = { kegiatan: [], santri: [], absensi: [], hafalan: [], murojaah: [], idad: [], tesKenaikanJuz: [] };
+/* syncMeta.{namaTabel} = timestamp `updated_at` PALING BARU yang sudah
+   pernah diterima untuk tabel itu -- dipakai sebagai titik mulai delta
+   sync berikutnya (WHERE updated_at > syncMeta.<tabel>). Kosong/null
+   berarti tabel itu belum pernah disync -- artinya AMBIL PENUH.
+   syncMeta.fullSyncDate = tanggal (Asia/Jakarta) terakhir kali SEMUA
+   tabel delta berhasil di-sync PENUH sekaligus -- lihat penjelasan
+   "paksaPenuh" di loadAll(). */
+let syncMeta = {};
+let cacheDicoba = false;
 let SESSION = null; // { userId, role, program, nama }
 
 /* PENTING -- PENYEBAB BUG "beberapa santri tidak bisa diabsen H" (scan
@@ -342,33 +373,124 @@ async function fetchAllRows(makeQuery){
   }
   return rows;
 }
-/* Untuk tabel yang memang boleh gagal/tidak ada tanpa membatalkan
-   seluruh loadAll() (mis. `murojaah` di instalasi lama yang belum
-   punya tabel ini) -- kembalikan array kosong saja kalau error,
-   jangan sampai melempar dan menggagalkan Promise.all di bawah. */
-async function fetchAllRowsSafe(makeQuery){
-  try { return await fetchAllRows(makeQuery); }
-  catch(e){ console.warn('fetchAllRowsSafe: gagal ambil data, pakai kosong:', e); return []; }
+/* Sama seperti fetchAllRows, tapi kalau `sejak` diisi (delta sync),
+   cuma ambil baris yang `updated_at`-nya LEBIH BARU dari itu --
+   inilah inti perbaikan supaya tidak "load all" tiap kali. Diurut
+   ASCENDING by updated_at supaya baris TERAKHIR dari hasil ini otomatis
+   jadi titik mulai (watermark) untuk delta sync BERIKUTNYA (lihat
+   pemakaiannya di loadAll()). Tetap dipaginasi walau untuk delta
+   biasanya cuma sedikit baris -- supaya tetap aman kalau kebetulan ada
+   banyak perubahan sekaligus (mis. HP baru pertama kali sync lagi
+   setelah lama offline). */
+async function fetchRowsSince(makeQuery, sejak){
+  let rows = [];
+  let from = 0;
+  while(true){
+    let q = makeQuery();
+    if(sejak) q = q.gt('updated_at', sejak);
+    const { data, error } = await q.order('updated_at', { ascending: true }).range(from, from + PAGE_SIZE - 1);
+    if(error) throw error;
+    rows = rows.concat(data || []);
+    if(!data || data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return rows;
+}
+/* Gabungkan baris hasil delta sync ke array yang sudah ada di DB lokal,
+   menimpa baris LAMA yang idnya sama (upsert-by-key) tanpa menyentuh
+   baris lain yang tidak ikut berubah -- inilah bagian "cache" (data
+   lokal dipertahankan & cuma ditambal, bukan didownload ulang total
+   tiap kali). Dipakai hanya untuk hasil DELTA (sejak != null); untuk
+   sync PENUH, DB[tabel] diganti total supaya baris yang (jarang) sampai
+   terhapus di server lewat aplikasi lain ikut hilang juga secara lokal
+   -- lihat loadAll(). */
+function gabungBarisDelta(existing, incoming, keyFn){
+  if(!incoming.length) return existing;
+  const map = new Map(existing.map(r=>[keyFn(r), r]));
+  for(const r of incoming) map.set(keyFn(r), r);
+  return Array.from(map.values());
 }
 
-async function loadAll() {
+/* ====== Definisi tabel yang dipakai DELTA SYNC (absensi/hafalan/
+   murojaah/idad/tes_kenaikan_juz) -- semuanya punya kolom `updated_at`
+   + trigger yang otomatis mengisinya (lihat migrasi database), jadi
+   bisa difilter "WHERE updated_at > sync terakhir". Tabel kegiatan &
+   santri_umum SENGAJA tidak dimasukkan sini: keduanya kecil (belasan
+   & puluhan baris saja) jadi diambil PENUH terus tiap loadAll() --
+   egress-nya kecil, dan `santri_umum` (VIEW) juga tidak mengekspos
+   updated_at sehingga tidak bisa didelta.
+   - key: nama properti di objek DB (DB.absensi, DB.hafalan, dst).
+   - table/cols: nama tabel & kolom yang diambil dari Supabase.
+   - map: ubah 1 baris mentah dari Supabase ke bentuk yang dipakai UI
+     (identik dengan mapping yang dulu ada di dalam loadAll()).
+   - keyFn: kunci unik dipakai gabungBarisDelta() buat upsert-by-key.
+     Untuk absensi pakai gabungan (santri+kegiatan+tanggal) -- BUKAN id
+     -- karena itu juga kunci yang dipakai setAbsensi()/tandaiSisanyaAlpha()/
+     markHadirViaScan() saat menandai DB lokal langsung (baris-baris itu
+     belum punya `id` sebelum sempat disync, jadi kalau dikunci lewat id
+     baris-baris optimistic itu bisa saling menimpa).
+   - wajib: true berarti kalau gagal, loadAll() ikut gagal & jatuh ke
+     cadangan offline (sama seperti dulu absensi/hafalan TIDAK dibungkus
+     fetchAllRowsSafe). false berarti boleh gagal sendirian (mis. tabel
+     belum ada di instalasi lama) tanpa menggagalkan tabel lain. */
+const DELTA_TABLES = [
+  { key: 'absensi', table: 'absensi', wajib: true,
+    cols: 'id,santri_id,kegiatan_id,tanggal,status,updated_at',
+    map: a => ({ id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal, status: STATUS_FROM_DB[a.status] || 'a' }),
+    keyFn: a => a.santriId+'|'+a.kegiatanId+'|'+a.tanggal },
+  { key: 'hafalan', table: 'hafalan', wajib: true,
+    cols: 'id,santri_id,tanggal,juz,halaman_dari,halaman_sampai,kegiatan_id,keterangan,updated_at',
+    map: h => ({ id: h.id, santriId: String(h.santri_id), tanggal: h.tanggal, juz: h.juz,
+      halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
+      jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
+      kegiatanId: h.kegiatan_id!=null ? String(h.kegiatan_id) : null, keterangan: h.keterangan || 'Lancar' }),
+    keyFn: h => h.id },
+  { key: 'murojaah', table: 'murojaah', wajib: false,
+    cols: 'id,santri_id,kegiatan_id,tanggal,juz,cakupan,keterangan,updated_at',
+    map: m => ({ id: m.id, santriId: String(m.santri_id), kegiatanId: String(m.kegiatan_id), tanggal: m.tanggal,
+      juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar' }),
+    keyFn: m => m.id },
+  { key: 'idad', table: 'idad', wajib: false,
+    cols: 'id,santri_id,kegiatan_id,tanggal,metode,catatan,updated_at',
+    map: i => ({ id: i.id, santriId: String(i.santri_id), kegiatanId: i.kegiatan_id!=null ? String(i.kegiatan_id) : null,
+      tanggal: i.tanggal, metode: i.metode || '', catatan: i.catatan || '' }),
+    keyFn: i => i.id },
+  { key: 'tesKenaikanJuz', table: 'tes_kenaikan_juz', wajib: false,
+    cols: 'id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan,updated_at',
+    map: t => ({ id: String(t.id), santriId: String(t.santri_id), juzSelesai: t.juz_selesai, kategori: t.kategori,
+      syaratJuz: t.syarat_juz, tanggalMulai: t.tanggal_mulai, batasHari: t.batas_hari,
+      status: t.status, tanggalLulus: t.tanggal_lulus || null,
+      dicatatOleh: t.dicatat_oleh || '', catatan: t.catatan || '' }),
+    keyFn: t => t.id }
+];
+
+/* loadAll(opts): opts.forceFull=true memaksa AMBIL PENUH semua tabel
+   delta sekali ini saja (dipakai tombol Refresh manual -- lihat
+   refreshApp()), supaya pembina selalu punya cara menyamakan data 100%
+   kapan saja tanpa menunggu jadwal harian di bawah. */
+async function loadAll(opts) {
+  opts = opts || {};
   const revisionAtStart = dbRevision;
   try {
-    const [kegiatanData, santriData, absensiData, hafalanData, murojaahData, idadData, tesJuzData] = await Promise.all([
-      fetchAllRows(()=> sb.from('kegiatan').select('id,nama,program_khusus').eq('aktif', true).order('nama')),
-      fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama')),
-      fetchAllRows(()=> sb.from('absensi').select('id,santri_id,kegiatan_id,tanggal,status')),
-      fetchAllRows(()=> sb.from('hafalan').select('id,santri_id,tanggal,juz,halaman_dari,halaman_sampai,kegiatan_id,keterangan')),
-      fetchAllRowsSafe(()=> sb.from('murojaah').select('id,santri_id,kegiatan_id,tanggal,juz,cakupan,keterangan')),
-      fetchAllRowsSafe(()=> sb.from('idad').select('id,santri_id,kegiatan_id,tanggal,metode,catatan')),
-      fetchAllRowsSafe(()=> sb.from('tes_kenaikan_juz').select('id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan'))
-    ]);
-    /* Kalau ada perubahan lain yang terjadi SELAMA fetch di atas berjalan
-       (tap tombol H, scan, atau loadAll lain yang lebih baru sudah
-       selesai duluan), data hasil fetch ini sudah basi -- lewati saja,
-       jangan menimpa DB. Lihat catatan panjang di atas deklarasi
-       dbRevision. */
-    if(dbRevision !== revisionAtStart) return;
+    /* Cache-first, sekali per sesi: baca cadangan IndexedDB SEBELUM
+       menyentuh jaringan, supaya syncMeta (kapan tiap tabel terakhir
+       disync) ikut terbawa dari sesi/hari sebelumnya -- efeknya fetch
+       PERTAMA di sesi ini pun langsung bisa jadi DELTA, bukan LOAD ALL,
+       selama device ini pernah sync sebelumnya. */
+    if(!cacheDicoba){
+      cacheDicoba = true;
+      const cadangan = await idbLoad();
+      terapkanCadangan(cadangan);
+    }
+
+    /* Delta sync TIDAK bisa mendeteksi baris yang DIHAPUS di server
+       (mis. dari Aplikasi Pondok) -- cuma baris baru/berubah yang
+       kefilter `updated_at`. Supaya penghapusan semacam itu tetap ikut
+       tersinkron cepat atau lambat, sekali sehari (per device, per
+       Asia/Jakarta) SEMUA tabel delta dipaksa AMBIL PENUH & DB lokalnya
+       diganti total (bukan digabung) -- lihat blok "sejak" di bawah. */
+    const paksaPenuh = !!opts.forceFull || syncMeta.fullSyncDate !== todayStr();
+
     /* PENTING: semua id kegiatan/santri di-paksa jadi STRING di sini.
        Sebabnya: id kegiatan dari Supabase bisa berupa angka (number),
        sedangkan id yang dipilih lewat <select> di halaman (mis.
@@ -378,150 +500,76 @@ async function loadAll() {
        sama (mis. 5 !== "5") begitu pembina pindah kegiatan lalu balik
        lagi -- efeknya status Hadir/Izin/dst yang SUDAH tersimpan jadi
        terlihat kosong lagi padahal datanya ada di database. */
-    DB = {
-      kegiatan: kegiatanData.map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null })),
-      santri: santriData.map(santriRowToApp),
-      absensi: absensiData.map(a => ({
-        id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal,
-        status: STATUS_FROM_DB[a.status] || 'a'
-      })),
-      hafalan: hafalanData.map(h => ({
-        id: h.id, santriId: String(h.santri_id), tanggal: h.tanggal, juz: h.juz,
-        halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
-        jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
-        kegiatanId: h.kegiatan_id!=null ? String(h.kegiatan_id) : null, keterangan: h.keterangan || 'Lancar'
-      })),
-      murojaah: murojaahData.map(m => ({
-        id: m.id, santriId: String(m.santri_id), kegiatanId: String(m.kegiatan_id), tanggal: m.tanggal,
-        juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar'
-      })),
-      idad: idadData.map(i => ({
-        id: i.id, santriId: String(i.santri_id), kegiatanId: i.kegiatan_id!=null ? String(i.kegiatan_id) : null,
-        tanggal: i.tanggal, metode: i.metode || '', catatan: i.catatan || ''
-      })),
-      tesKenaikanJuz: tesJuzData.map(t => ({
-        id: String(t.id), santriId: String(t.santri_id), juzSelesai: t.juz_selesai, kategori: t.kategori,
-        syaratJuz: t.syarat_juz, tanggalMulai: t.tanggal_mulai, batasHari: t.batas_hari,
-        status: t.status, tanggalLulus: t.tanggal_lulus || null,
-        dicatatOleh: t.dicatat_oleh || '', catatan: t.catatan || ''
-      }))
-    };
-    dbRevision++;
-    OFFLINE_MODE = false;
-    idbSave(DB);
-  } catch(e){
-    if(dbRevision !== revisionAtStart) return; // sudah ketinggalan, jangan timpa dengan cadangan offline juga
-    console.warn('Gagal ambil data dari Supabase, coba pakai cadangan offline:', e);
-    const cadangan = await idbLoad();
-    if(dbRevision !== revisionAtStart) return;
-    if(cadangan){
-      DB = cadangan;
-      dbRevision++;
-      OFFLINE_MODE = true;
-    } else {
-      throw e;
-    }
-  }
-}
+    const kegiatanP = fetchAllRows(()=> sb.from('kegiatan').select('id,nama,program_khusus').eq('aktif', true).order('nama'));
+    const santriP = fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama'));
 
-/* ---------- REFRESH RINGAN (dipakai auto-refresh berkala, BUKAN saat
-   login/tombol Refresh manual -- keduanya tetap pakai loadAll() penuh
-   di atas) ----------
-   loadAll() menarik SELURUH isi tabel absensi/hafalan/murojaah/idad
-   dari awal berdirinya pondok setiap kali dipanggil. Itu wajar dipakai
-   sekali saat login, tapi kalau dipakai juga oleh auto-refresh yang
-   jalan tiap 2 menit, ukurannya ikut membesar terus seiring riwayat
-   menumpuk -- ini yang bikin egress Supabase tembus 5GB sebelumnya.
-   loadIncremental() ini hanya menarik BAGIAN YANG BERTAMBAH/BERUBAH:
-   - absensi: hanya baris dengan tanggal 2 hari terakhir (hari ini +
-     kemarin). Cukup untuk menangkap absensi yang baru diisi ATAU
-     baru saja DIKOREKSI pembina lain (absensi pakai upsert, jadi bisa
-     diubah setelah tersimpan) -- koreksi status pada praktiknya hanya
-     terjadi di hari yang sama, jadi 2 hari sudah aman. Baris lama
-     (tanggal < cutoff) yang sudah ada di DB lokal TIDAK ditarik ulang,
-     cukup dipertahankan dari hasil loadAll()/loadIncremental()
-     sebelumnya.
-   - hafalan/murojaah/idad: hanya baris dengan id lebih besar dari id
-     terbesar yang sudah ada di DB lokal. Tiga tabel ini cuma nambah
-     baris baru (insert), tidak pernah diubah lagi setelah tersimpan,
-     jadi aman dipakai sebagai penanda "sudah pernah diambil, tidak
-     usah ditarik ulang".
-   kegiatan & santri_umum tetap ditarik penuh tiap kali karena jumlah
-   barisnya kecil (puluhan, bukan ribuan) dan bukan sumber egress
-   besar. tes_kenaikan_juz juga ditarik penuh tiap kali (SENGAJA, bukan
-   dibatasi id/tanggal) -- tabel ini bisa DIUPDATE (status jadi 'lulus'
-   lewat lulusTesKenaikanJuz), bukan cuma nambah baris baru, jadi tidak
-   aman dipakai dengan cara "gt(id, ...)" seperti hafalan/murojaah/idad.
-   Tapi tabel ini kecil (hanya terisi saat santri tuntas 1 juz -- jauh
-   lebih jarang daripada absensi harian), jadi biayanya tetap murah
-   walau ditarik penuh. Dengan begitu, fungsi ini AMAN dipakai
-   menggantikan loadAll() di titik-titik "simpan lalu refresh tampilan"
-   (saveHafalan, lulusTesKenaikanJuz, saveIdad, simpan Murojaah), tidak
-   cuma di timer auto-refresh -- lihat pemanggilnya di bagian ABSENSI/
-   HAFALAN. */
-async function loadIncremental(){
-  const revisionAtStart = dbRevision;
-  try{
-    const cutoff = daysAgoStr(1);
-    const maxHafalanId = DB.hafalan.reduce((m,h)=>Math.max(m, Number(h.id)||0), 0);
-    const maxMurojaahId = DB.murojaah.reduce((m,x)=>Math.max(m, Number(x.id)||0), 0);
-    const maxIdadId = DB.idad.reduce((m,x)=>Math.max(m, Number(x.id)||0), 0);
+    /* Tiap tabel delta disync PARALEL (Promise.all), sama seperti dulu.
+       Tabel yang tidak wajib (murojaah/idad/tes_kenaikan_juz) dibungkus
+       supaya gagal sendiri-sendiri tidak menggagalkan Promise.all --
+       gantinya fetchAllRowsSafe dulu. */
+    const deltaPromises = DELTA_TABLES.map(spec => {
+      const sejak = paksaPenuh ? null : (syncMeta[spec.key] || null);
+      const p = fetchRowsSince(()=> sb.from(spec.table).select(spec.cols), sejak)
+        .then(rows => ({ spec, sejak, rows, gagal: false }));
+      return spec.wajib ? p : p.catch(e => {
+        console.warn('Sinkron tabel '+spec.table+' gagal, pakai data lokal yang ada:', e);
+        return { spec, sejak, rows: null, gagal: true };
+      });
+    });
 
-    const [kegiatanData, santriData, absensiBaru, hafalanBaru, murojaahBaru, idadBaru, tesJuzData] = await Promise.all([
-      fetchAllRows(()=> sb.from('kegiatan').select('id,nama,program_khusus').eq('aktif', true).order('nama')),
-      fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama')),
-      fetchAllRows(()=> sb.from('absensi').select('id,santri_id,kegiatan_id,tanggal,status').gte('tanggal', cutoff)),
-      fetchAllRows(()=> sb.from('hafalan').select('id,santri_id,tanggal,juz,halaman_dari,halaman_sampai,kegiatan_id,keterangan').gt('id', maxHafalanId)),
-      fetchAllRowsSafe(()=> sb.from('murojaah').select('id,santri_id,kegiatan_id,tanggal,juz,cakupan,keterangan').gt('id', maxMurojaahId)),
-      fetchAllRowsSafe(()=> sb.from('idad').select('id,santri_id,kegiatan_id,tanggal,metode,catatan').gt('id', maxIdadId)),
-      fetchAllRowsSafe(()=> sb.from('tes_kenaikan_juz').select('id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan'))
-    ]);
-    /* Sama seperti di loadAll(): kalau ada perubahan lain yang terjadi
-       SELAMA fetch di atas berjalan, hasil ini sudah basi -- lewati,
-       jangan sampai menimpa data yang lebih baru. */
+    const [kegiatanData, santriData, ...deltaHasil] = await Promise.all([kegiatanP, santriP, ...deltaPromises]);
+
+    /* Kalau ada perubahan lokal (tap tombol H, scan, dst) yang terjadi
+       SELAMA fetch di atas berjalan, dbRevision sudah berubah -- untuk
+       kegiatan/santri (diganti total, bukan digabung) itu tidak masalah
+       karena tidak ada yang menulis ke DB.kegiatan/DB.santri secara
+       lokal. Baris di bawah tetap dipertahankan sebagai jaga-jaga saja. */
     if(dbRevision !== revisionAtStart) return;
 
     DB.kegiatan = kegiatanData.map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null }));
     DB.santri = santriData.map(santriRowToApp);
 
-    // Buang dulu entri absensi lama yang tanggalnya masuk rentang cutoff,
-    // lalu ganti dengan versi terbaru dari server (menangkap koreksi status).
-    // Baris di luar rentang cutoff (tanggal < cutoff) tetap dipertahankan.
-    DB.absensi = DB.absensi.filter(a => a.tanggal < cutoff).concat(
-      absensiBaru.map(a => ({
-        id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal,
-        status: STATUS_FROM_DB[a.status] || 'a'
-      }))
-    );
-
-    DB.hafalan = DB.hafalan.concat(hafalanBaru.map(h => ({
-      id: h.id, santriId: String(h.santri_id), tanggal: h.tanggal, juz: h.juz,
-      halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
-      jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
-      kegiatanId: h.kegiatan_id!=null ? String(h.kegiatan_id) : null, keterangan: h.keterangan || 'Lancar'
-    })));
-    DB.murojaah = DB.murojaah.concat(murojaahBaru.map(m => ({
-      id: m.id, santriId: String(m.santri_id), kegiatanId: String(m.kegiatan_id), tanggal: m.tanggal,
-      juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar'
-    })));
-    DB.idad = DB.idad.concat(idadBaru.map(i => ({
-      id: i.id, santriId: String(i.santri_id), kegiatanId: i.kegiatan_id!=null ? String(i.kegiatan_id) : null,
-      tanggal: i.tanggal, metode: i.metode || '', catatan: i.catatan || ''
-    })));
-    DB.tesKenaikanJuz = tesJuzData.map(t => ({
-      id: String(t.id), santriId: String(t.santri_id), juzSelesai: t.juz_selesai, kategori: t.kategori,
-      syaratJuz: t.syarat_juz, tanggalMulai: t.tanggal_mulai, batasHari: t.batas_hari,
-      status: t.status, tanggalLulus: t.tanggal_lulus || null,
-      dicatatOleh: t.dicatat_oleh || '', catatan: t.catatan || ''
-    }));
+    let semuaPenuhBerhasil = true;
+    for(const hasil of deltaHasil){
+      const { spec, sejak, rows, gagal } = hasil;
+      if(gagal){ semuaPenuhBerhasil = false; continue; }
+      const mapped = rows.map(spec.map);
+      if(sejak){
+        /* Delta: tambal/timpa baris yang berubah saja ke cache lokal
+           yang sudah ada -- INI yang menggantikan "load all". */
+        DB[spec.key] = gabungBarisDelta(DB[spec.key], mapped, spec.keyFn);
+      } else {
+        /* Sync penuh (pertama kali, atau paksaPenuh harian/manual):
+           ganti total supaya baris yang sudah dihapus di server ikut
+           hilang dari cache lokal juga. */
+        DB[spec.key] = mapped;
+      }
+      if(mapped.length){
+        const terbaru = rows[rows.length-1].updated_at;
+        if(!syncMeta[spec.key] || terbaru > syncMeta[spec.key]) syncMeta[spec.key] = terbaru;
+      } else if(!sejak){
+        /* Tabel kosong tapi barusan disync PENUH -- tandai sudah pernah
+           disync (waktu sekarang) supaya lain kali otomatis jadi delta,
+           bukan mengulang sync penuh terus-menerus untuk tabel kosong. */
+        syncMeta[spec.key] = new Date().toISOString();
+      }
+    }
+    if(paksaPenuh && semuaPenuhBerhasil) syncMeta.fullSyncDate = todayStr();
 
     dbRevision++;
     OFFLINE_MODE = false;
-    idbSave(DB);
-  }catch(e){
-    // Gagal (mis. lagi tidak ada internet) -- biarkan saja, DB lokal yang
-    // sudah ada tetap dipakai, dicoba lagi di siklus 2 menit berikutnya.
-    console.warn('Refresh ringan gagal (dilewati, coba lagi 2 menit lagi):', e);
+    idbSave({ DB, syncMeta });
+  } catch(e){
+    if(dbRevision !== revisionAtStart) return; // sudah ketinggalan, jangan timpa dengan cadangan offline juga
+    console.warn('Gagal ambil data dari Supabase, coba pakai cadangan offline:', e);
+    const cadangan = await idbLoad();
+    if(dbRevision !== revisionAtStart) return;
+    if(terapkanCadangan(cadangan)){
+      dbRevision++;
+      OFFLINE_MODE = true;
+    } else {
+      throw e;
+    }
   }
 }
 
@@ -642,10 +690,10 @@ function startAutoRefresh(){
     const modalRoot = document.getElementById('modalRoot');
     if(modalRoot && modalRoot.innerHTML.trim() !== '') return; // ada modal input terbuka, jangan ganggu
     try{
-      await loadIncremental();
+      await loadAll();
       if(currentPage==='absensi') renderAbsensiPage();
       else if(currentPage==='hafalan') renderHafalanPage();
-    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi nanti):', e); }
+    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 20 detik lagi):', e); }
   }, 120000);
 }
 
@@ -695,7 +743,13 @@ async function refreshApp(){
   const btns = [document.getElementById('navaction-refresh')].filter(Boolean);
   btns.forEach(b=>{ b.disabled = true; b.classList.add('spinning'); });
   try {
-    await loadAll();
+    /* forceFull: true -- tombol Refresh manual tetap ambil PENUH (bukan
+       delta), supaya pembina selalu punya cara menyamakan data 100%
+       dengan server kapan saja diminta (termasuk menangkap baris yang
+       terhapus di aplikasi lain, yang tidak kelihatan lewat delta sync
+       biasa). Auto-refresh & sinkron setelah simpan tetap delta seperti
+       biasa -- lihat catatan di loadAll(). */
+    await loadAll({ forceFull: true });
     const oldBanner = document.getElementById('offlineBanner');
     if(oldBanner) oldBanner.remove();
     if(OFFLINE_MODE){
@@ -752,14 +806,6 @@ function toJakartaDateStr(date){
   return fmt.format(date); // format en-CA menghasilkan langsung YYYY-MM-DD
 }
 function todayStr(){ return toJakartaDateStr(new Date()); }
-/* Tanggal N hari yang lalu (zona WIB), dipakai loadIncremental() di
-   bawah untuk membatasi rentang absensi yang ditarik ulang tiap
-   auto-refresh -- lihat penjelasan di loadIncremental(). */
-function daysAgoStr(n){
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return toJakartaDateStr(d);
-}
 function val(id){ return document.getElementById(id).value; }
 
 /* Kegiatan yang boleh pakai status "Haid": semua kegiatan sholat (nama
@@ -1439,7 +1485,7 @@ async function saveHafalan(santriId, kegiatanId){
   if(keterangan !== 'Ulang' && sampai >= 20){
     await buatTesKenaikanJuzJikaPerlu(santriId, juz, tanggal);
   }
-  await loadIncremental();
+  await loadAll();
   closeModal();
   renderHafalanPage();
 }
@@ -1494,7 +1540,7 @@ async function lulusTesKenaikanJuz(tesId, santriId, kegiatanId){
     dicatat_oleh: SESSION.nama || SESSION.email, catatan: catatan || null
   }).eq('id', tesId);
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await loadIncremental();
+  await loadAll();
   closeModal();
   renderHafalanPage();
   /* Langsung lanjut buka form Tambah Hafalan Baru untuk juz berikutnya. */
@@ -1528,7 +1574,7 @@ async function saveIdad(santriId, kegiatanId){
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
-  await loadIncremental();
+  await loadAll();
   closeModal();
   renderHafalanPage();
 }
@@ -1593,7 +1639,7 @@ async function saveMurojaah(santriId, kegiatanId){
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
-  await loadIncremental();
+  await loadAll();
   closeModal();
   renderHafalanPage();
 }
