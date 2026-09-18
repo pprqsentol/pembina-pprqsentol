@@ -424,6 +424,107 @@ async function loadAll() {
   }
 }
 
+/* ---------- REFRESH RINGAN (dipakai auto-refresh berkala, BUKAN saat
+   login/tombol Refresh manual -- keduanya tetap pakai loadAll() penuh
+   di atas) ----------
+   loadAll() menarik SELURUH isi tabel absensi/hafalan/murojaah/idad
+   dari awal berdirinya pondok setiap kali dipanggil. Itu wajar dipakai
+   sekali saat login, tapi kalau dipakai juga oleh auto-refresh yang
+   jalan tiap 2 menit, ukurannya ikut membesar terus seiring riwayat
+   menumpuk -- ini yang bikin egress Supabase tembus 5GB sebelumnya.
+   loadIncremental() ini hanya menarik BAGIAN YANG BERTAMBAH/BERUBAH:
+   - absensi: hanya baris dengan tanggal 2 hari terakhir (hari ini +
+     kemarin). Cukup untuk menangkap absensi yang baru diisi ATAU
+     baru saja DIKOREKSI pembina lain (absensi pakai upsert, jadi bisa
+     diubah setelah tersimpan) -- koreksi status pada praktiknya hanya
+     terjadi di hari yang sama, jadi 2 hari sudah aman. Baris lama
+     (tanggal < cutoff) yang sudah ada di DB lokal TIDAK ditarik ulang,
+     cukup dipertahankan dari hasil loadAll()/loadIncremental()
+     sebelumnya.
+   - hafalan/murojaah/idad: hanya baris dengan id lebih besar dari id
+     terbesar yang sudah ada di DB lokal. Tiga tabel ini cuma nambah
+     baris baru (insert), tidak pernah diubah lagi setelah tersimpan,
+     jadi aman dipakai sebagai penanda "sudah pernah diambil, tidak
+     usah ditarik ulang".
+   kegiatan & santri_umum tetap ditarik penuh tiap kali karena jumlah
+   barisnya kecil (puluhan, bukan ribuan) dan bukan sumber egress
+   besar. tes_kenaikan_juz juga ditarik penuh tiap kali (SENGAJA, bukan
+   dibatasi id/tanggal) -- tabel ini bisa DIUPDATE (status jadi 'lulus'
+   lewat lulusTesKenaikanJuz), bukan cuma nambah baris baru, jadi tidak
+   aman dipakai dengan cara "gt(id, ...)" seperti hafalan/murojaah/idad.
+   Tapi tabel ini kecil (hanya terisi saat santri tuntas 1 juz -- jauh
+   lebih jarang daripada absensi harian), jadi biayanya tetap murah
+   walau ditarik penuh. Dengan begitu, fungsi ini AMAN dipakai
+   menggantikan loadAll() di titik-titik "simpan lalu refresh tampilan"
+   (saveHafalan, lulusTesKenaikanJuz, saveIdad, simpan Murojaah), tidak
+   cuma di timer auto-refresh -- lihat pemanggilnya di bagian ABSENSI/
+   HAFALAN. */
+async function loadIncremental(){
+  const revisionAtStart = dbRevision;
+  try{
+    const cutoff = daysAgoStr(1);
+    const maxHafalanId = DB.hafalan.reduce((m,h)=>Math.max(m, Number(h.id)||0), 0);
+    const maxMurojaahId = DB.murojaah.reduce((m,x)=>Math.max(m, Number(x.id)||0), 0);
+    const maxIdadId = DB.idad.reduce((m,x)=>Math.max(m, Number(x.id)||0), 0);
+
+    const [kegiatanData, santriData, absensiBaru, hafalanBaru, murojaahBaru, idadBaru, tesJuzData] = await Promise.all([
+      fetchAllRows(()=> sb.from('kegiatan').select('id,nama,program_khusus').eq('aktif', true).order('nama')),
+      fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama')),
+      fetchAllRows(()=> sb.from('absensi').select('id,santri_id,kegiatan_id,tanggal,status').gte('tanggal', cutoff)),
+      fetchAllRows(()=> sb.from('hafalan').select('id,santri_id,tanggal,juz,halaman_dari,halaman_sampai,kegiatan_id,keterangan').gt('id', maxHafalanId)),
+      fetchAllRowsSafe(()=> sb.from('murojaah').select('id,santri_id,kegiatan_id,tanggal,juz,cakupan,keterangan').gt('id', maxMurojaahId)),
+      fetchAllRowsSafe(()=> sb.from('idad').select('id,santri_id,kegiatan_id,tanggal,metode,catatan').gt('id', maxIdadId)),
+      fetchAllRowsSafe(()=> sb.from('tes_kenaikan_juz').select('id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan'))
+    ]);
+    /* Sama seperti di loadAll(): kalau ada perubahan lain yang terjadi
+       SELAMA fetch di atas berjalan, hasil ini sudah basi -- lewati,
+       jangan sampai menimpa data yang lebih baru. */
+    if(dbRevision !== revisionAtStart) return;
+
+    DB.kegiatan = kegiatanData.map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null }));
+    DB.santri = santriData.map(santriRowToApp);
+
+    // Buang dulu entri absensi lama yang tanggalnya masuk rentang cutoff,
+    // lalu ganti dengan versi terbaru dari server (menangkap koreksi status).
+    // Baris di luar rentang cutoff (tanggal < cutoff) tetap dipertahankan.
+    DB.absensi = DB.absensi.filter(a => a.tanggal < cutoff).concat(
+      absensiBaru.map(a => ({
+        id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal,
+        status: STATUS_FROM_DB[a.status] || 'a'
+      }))
+    );
+
+    DB.hafalan = DB.hafalan.concat(hafalanBaru.map(h => ({
+      id: h.id, santriId: String(h.santri_id), tanggal: h.tanggal, juz: h.juz,
+      halamanDari: h.halaman_dari, halamanSampai: h.halaman_sampai,
+      jumlahHalaman: h.halaman_sampai - h.halaman_dari + 1,
+      kegiatanId: h.kegiatan_id!=null ? String(h.kegiatan_id) : null, keterangan: h.keterangan || 'Lancar'
+    })));
+    DB.murojaah = DB.murojaah.concat(murojaahBaru.map(m => ({
+      id: m.id, santriId: String(m.santri_id), kegiatanId: String(m.kegiatan_id), tanggal: m.tanggal,
+      juz: m.juz, cakupan: m.cakupan, keterangan: m.keterangan || 'Lancar'
+    })));
+    DB.idad = DB.idad.concat(idadBaru.map(i => ({
+      id: i.id, santriId: String(i.santri_id), kegiatanId: i.kegiatan_id!=null ? String(i.kegiatan_id) : null,
+      tanggal: i.tanggal, metode: i.metode || '', catatan: i.catatan || ''
+    })));
+    DB.tesKenaikanJuz = tesJuzData.map(t => ({
+      id: String(t.id), santriId: String(t.santri_id), juzSelesai: t.juz_selesai, kategori: t.kategori,
+      syaratJuz: t.syarat_juz, tanggalMulai: t.tanggal_mulai, batasHari: t.batas_hari,
+      status: t.status, tanggalLulus: t.tanggal_lulus || null,
+      dicatatOleh: t.dicatat_oleh || '', catatan: t.catatan || ''
+    }));
+
+    dbRevision++;
+    OFFLINE_MODE = false;
+    idbSave(DB);
+  }catch(e){
+    // Gagal (mis. lagi tidak ada internet) -- biarkan saja, DB lokal yang
+    // sudah ada tetap dipakai, dicoba lagi di siklus 2 menit berikutnya.
+    console.warn('Refresh ringan gagal (dilewati, coba lagi 2 menit lagi):', e);
+  }
+}
+
 const NAV_ALL = [
   {id:'absensi', label:'Absensi', icon:'&#10003;'},
   {id:'hafalan', label:'Hafalan', icon:'&#128214;'},
@@ -541,10 +642,10 @@ function startAutoRefresh(){
     const modalRoot = document.getElementById('modalRoot');
     if(modalRoot && modalRoot.innerHTML.trim() !== '') return; // ada modal input terbuka, jangan ganggu
     try{
-      await loadAll();
+      await loadIncremental();
       if(currentPage==='absensi') renderAbsensiPage();
       else if(currentPage==='hafalan') renderHafalanPage();
-    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 20 detik lagi):', e); }
+    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi nanti):', e); }
   }, 120000);
 }
 
@@ -651,6 +752,14 @@ function toJakartaDateStr(date){
   return fmt.format(date); // format en-CA menghasilkan langsung YYYY-MM-DD
 }
 function todayStr(){ return toJakartaDateStr(new Date()); }
+/* Tanggal N hari yang lalu (zona WIB), dipakai loadIncremental() di
+   bawah untuk membatasi rentang absensi yang ditarik ulang tiap
+   auto-refresh -- lihat penjelasan di loadIncremental(). */
+function daysAgoStr(n){
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return toJakartaDateStr(d);
+}
 function val(id){ return document.getElementById(id).value; }
 
 /* Kegiatan yang boleh pakai status "Haid": semua kegiatan sholat (nama
@@ -1330,7 +1439,7 @@ async function saveHafalan(santriId, kegiatanId){
   if(keterangan !== 'Ulang' && sampai >= 20){
     await buatTesKenaikanJuzJikaPerlu(santriId, juz, tanggal);
   }
-  await loadAll();
+  await loadIncremental();
   closeModal();
   renderHafalanPage();
 }
@@ -1385,7 +1494,7 @@ async function lulusTesKenaikanJuz(tesId, santriId, kegiatanId){
     dicatat_oleh: SESSION.nama || SESSION.email, catatan: catatan || null
   }).eq('id', tesId);
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await loadAll();
+  await loadIncremental();
   closeModal();
   renderHafalanPage();
   /* Langsung lanjut buka form Tambah Hafalan Baru untuk juz berikutnya. */
@@ -1419,7 +1528,7 @@ async function saveIdad(santriId, kegiatanId){
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
-  await loadAll();
+  await loadIncremental();
   closeModal();
   renderHafalanPage();
 }
@@ -1484,7 +1593,7 @@ async function saveMurojaah(santriId, kegiatanId){
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
-  await loadAll();
+  await loadIncremental();
   closeModal();
   renderHafalanPage();
 }
