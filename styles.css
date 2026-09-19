@@ -1,174 +1,244 @@
+/* ===== Tema "Kasir" -- terinspirasi gaya aplikasi KasGo (kartu produk,
+   chip berwarna, tombol aksi hijau tegas, bottom-nav mengambang), tetap
+   memakai HIJAU sebagai warna ciri khas Aplikasi Pembina. ===== */
 :root{
-  --green-900:#1f3327; --green-700:#2f4d3a; --green-600:#3b5940; --green-100:#e4ece3;
-  --bg:#f4f5f0; --card:#ffffff; --border:#dcded6; --text:#232821; --muted:#6b7268;
-  --danger:#a33; --radius:12px;
+  --green-900:#0f2417; --green-800:#153a24; --green-700:#1c6b3f; --green-600:#1fae5c;
+  --green-500:#2bc96f; --green-100:#e3f8ea; --green-50:#f2fbf5;
+  --purple:#7c5cfc; --purple-100:#efeaff;
+  --orange:#f59e0b; --orange-100:#fff2dc;
+  --bg:#f4f7f4; --card:#ffffff; --border:#e7ebe4; --text:#152018; --muted:#78826f;
+  --danger:#e5484d; --danger-100:#fdeceb;
+  --radius:18px; --radius-sm:12px;
+  --shadow-card:0 1px 2px rgba(15,36,23,.04), 0 6px 16px rgba(15,36,23,.06);
+  --shadow-pop:0 10px 30px rgba(15,36,23,.16);
 }
 *{box-sizing:border-box;}
-body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
+body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);-webkit-tap-highlight-color:transparent;}
 .screen{min-height:100vh;}
-h1,h2,h3{font-weight:600;margin:0 0 4px;}
+h1,h2,h3{font-weight:700;margin:0 0 4px;letter-spacing:-.2px;}
 .muted{color:var(--muted);font-size:13px;}
 button{cursor:pointer;font-family:inherit;}
 
-/* Login */
-#loginScreen{display:flex;align-items:center;justify-content:center;background:var(--green-900);padding:24px;}
-.login-box{background:var(--card);padding:28px 24px;border-radius:16px;width:100%;max-width:320px;text-align:center;}
-.login-logo{width:72px;height:72px;border-radius:50%;object-fit:cover;margin-bottom:8px;}
-.login-box label{display:block;text-align:left;font-size:13px;margin:14px 0 4px;color:var(--muted);}
-.login-box select{width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);font-size:15px;}
-.btn-primary{width:100%;margin-top:20px;padding:12px;border:none;border-radius:8px;background:var(--green-600);color:#fff;font-size:15px;font-weight:600;}
-.btn-primary:active{background:var(--green-700);}
+/* ---------- Login ---------- */
+#loginScreen{display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(circle at 20% 15%, var(--green-700), var(--green-900) 65%);
+  padding:24px;}
+.login-box{background:var(--card);padding:32px 26px;border-radius:24px;width:100%;max-width:320px;
+  text-align:center;box-shadow:var(--shadow-pop);}
+.login-logo{width:76px;height:76px;border-radius:22px;object-fit:cover;margin-bottom:10px;
+  box-shadow:0 6px 18px rgba(28,107,63,.28);}
+.login-box h1{font-size:19px;}
+.login-box label{display:block;text-align:left;font-size:12.5px;font-weight:600;margin:14px 0 5px;color:var(--muted);}
+.login-box select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);font-size:15px;background:var(--bg);}
+.btn-primary{width:100%;margin-top:22px;padding:14px;border:none;border-radius:14px;
+  background:linear-gradient(135deg, var(--green-500), var(--green-700));color:#fff;font-size:15px;font-weight:700;
+  box-shadow:0 8px 20px rgba(31,174,92,.35);transition:transform .08s ease, box-shadow .08s ease;}
+.btn-primary:active{transform:translateY(1px) scale(.99);box-shadow:0 4px 10px rgba(31,174,92,.3);}
 
-/* Top bar */
-.topbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--card);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10;}
-.topbar-logo{width:32px;height:32px;border-radius:50%;object-fit:cover;}
-.topbar-title{font-weight:600;font-size:15px;}
-.topbar-sub{font-size:12px;color:var(--muted);}
-.icon-btn{margin-left:auto;background:none;border:none;font-size:20px;color:var(--muted);padding:6px;}
+/* ---------- Top bar ---------- */
+.topbar{display:flex;align-items:center;gap:11px;padding:12px 16px;
+  background:linear-gradient(135deg, var(--green-800), var(--green-900));
+  color:#fff;position:sticky;top:0;z-index:10;box-shadow:0 4px 14px rgba(15,36,23,.18);}
+.topbar-logo{width:36px;height:36px;border-radius:11px;object-fit:cover;box-shadow:0 2px 8px rgba(0,0,0,.25);}
+.topbar-title{font-weight:700;font-size:15px;color:#fff;}
+.topbar-sub{font-size:12px;color:#bcd6c4;}
+.icon-btn{margin-left:auto;background:rgba(255,255,255,.12);border:none;font-size:18px;color:#fff;
+  padding:8px 10px;border-radius:11px;}
+.icon-btn:active{background:rgba(255,255,255,.22);}
 
-.layout{display:flex;min-height:calc(100vh - 53px);}
+.layout{display:flex;min-height:calc(100vh - 59px);}
 .sidebar{display:none;}
-.content{flex:1;padding:14px;padding-bottom:80px;max-width:960px;margin:0 auto;width:100%;}
+.content{flex:1;padding:14px;padding-bottom:92px;max-width:960px;margin:0 auto;width:100%;}
 
-/* Bottom nav (mobile) */
-.bottomnav{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);display:flex;z-index:10;}
-.bottomnav .navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px;background:none;border:none;color:var(--muted);font-size:10px;}
-.bottomnav .navitem.active{color:var(--green-600);}
-.bottomnav .navitem .ic{font-size:18px;}
+/* ---------- Bottom nav (mengambang, mirip Kasgo) ---------- */
+.bottomnav{position:fixed;left:10px;right:10px;bottom:10px;background:var(--card);
+  border-top:none;border-radius:20px;display:flex;z-index:10;
+  box-shadow:0 10px 28px rgba(15,36,23,.16);padding:6px;gap:4px;}
+.bottomnav .navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:8px 2px;background:none;border:none;color:var(--muted);font-size:10.5px;font-weight:600;
+  border-radius:14px;transition:background .12s ease, color .12s ease;}
+.bottomnav .navitem.active{color:var(--green-700);background:var(--green-100);}
+.bottomnav .navitem .ic{font-size:19px;}
 
-/* Tombol aksi (Refresh & Keluar) di tab navigasi -- dipisahkan sedikit
-   dari tombol halaman supaya jelas ini bukan pindah halaman, tapi aksi. */
+/* Tombol aksi (Refresh & Keluar) di tab navigasi. */
 .navitem-action{position:relative;}
-.bottomnav .navitem-action{border-left:1px solid var(--border);}
+.bottomnav .navitem-action{border-left:1px solid var(--border);margin-left:2px;padding-left:8px;border-radius:14px;}
 .navitem-action:disabled{opacity:0.5;}
 .navitem-action.spinning .ic{display:inline-block;animation:navspin 0.7s linear infinite;}
 #navaction-logout .ic{color:var(--danger);}
 .sidebar .navitem-action{color:var(--muted);}
 @keyframes navspin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 
-/* Sidebar (desktop) */
+/* ---------- Sidebar (desktop) ---------- */
 @media (min-width:800px){
   .bottomnav{display:none;}
-  .sidebar{display:flex;flex-direction:column;width:190px;background:var(--card);border-right:1px solid var(--border);padding:14px 8px;gap:2px;}
-  .sidebar .navitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:none;background:none;text-align:left;color:var(--text);font-size:14px;}
-  .sidebar .navitem.active{background:var(--green-100);color:var(--green-700);font-weight:600;}
-  .sidebar .navitem-action{margin-top:8px;}
-  .sidebar .navitem:not(.navitem-action) + .navitem-action{border-top:1px solid var(--border);padding-top:16px;}
-  .content{padding:20px;}
+  .sidebar{display:flex;flex-direction:column;width:200px;background:var(--card);
+    border-right:1px solid var(--border);padding:16px 10px;gap:3px;}
+  .sidebar .navitem{display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:13px;
+    border:none;background:none;text-align:left;color:var(--text);font-size:14px;font-weight:600;}
+  .sidebar .navitem.active{background:var(--green-100);color:var(--green-700);}
+  .sidebar .navitem-action{margin-top:10px;}
+  .sidebar .navitem:not(.navitem-action) + .navitem-action{border-top:1px solid var(--border);padding-top:18px;}
+  .content{padding:22px;}
 }
 
-/* Cards / generic UI */
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:12px;}
-.card-title{font-size:14px;font-weight:600;margin-bottom:10px;}
+/* ---------- Kartu generik ---------- */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+  padding:15px;margin-bottom:12px;box-shadow:var(--shadow-card);}
+.card-title{font-size:14px;font-weight:700;margin-bottom:10px;}
 .row{display:flex;justify-content:space-between;align-items:center;gap:8px;}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.stat{background:var(--green-100);border-radius:10px;padding:10px 12px;}
-.stat .num{font-size:20px;font-weight:700;color:var(--green-700);}
-.stat .label{font-size:12px;color:var(--muted);}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.stat{background:var(--green-100);border-radius:var(--radius-sm);padding:12px 14px;}
+.stat .num{font-size:22px;font-weight:800;color:var(--green-700);}
+.stat .label{font-size:12px;color:var(--muted);font-weight:600;}
 
-.list-item{display:flex;align-items:center;gap:10px;padding:10px 6px;border-bottom:1px solid var(--border);}
-.list-item:last-child{border-bottom:none;}
-.list-item-done{opacity:.55;}
-.badge-done{color:var(--green-600);font-weight:600;}
-.badge-haid{color:#8e44ad;font-weight:600;}
-.badge-testpending{color:var(--danger);font-weight:600;}
+/* Baris daftar (santri) -- dibuat mirip "product card" Kasgo: avatar warna,
+   nama+info, area status/aksi di kanan. */
+.list-item{display:flex;align-items:center;gap:11px;padding:11px 8px;border-radius:14px;
+  transition:background .1s ease;}
+.list-item:active{background:var(--green-50);}
+.list-item + .list-item{border-top:1px solid var(--border);}
+.list-item-done{opacity:.6;}
+.badge-done{color:var(--green-700);font-weight:700;}
+.badge-haid{color:var(--purple);font-weight:700;}
+.badge-testpending{color:var(--danger);font-weight:700;}
 .btn[disabled]{opacity:.5;cursor:not-allowed;}
-.avatar{width:38px;height:38px;border-radius:50%;background:var(--green-100);color:var(--green-700);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;object-fit:cover;}
-.list-item .name{font-weight:600;font-size:14px;}
+.avatar{width:40px;height:40px;border-radius:13px;background:var(--green-100);color:var(--green-700);
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;object-fit:cover;
+  flex-shrink:0;}
+.list-item .name{font-weight:700;font-size:14px;}
 .list-item .sub{font-size:12px;color:var(--muted);}
 
-input,select,textarea{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:#fff;color:var(--text);}
-label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;}
-.btn{padding:9px 14px;border-radius:8px;border:1px solid var(--border);background:#fff;font-size:13px;font-weight:600;color:var(--text);}
-.btn-accent{background:var(--green-600);color:#fff;border-color:var(--green-600);}
-.btn-danger{color:var(--danger);border-color:var(--danger);}
-.btn-sm{padding:6px 10px;font-size:12px;}
+/* ---------- Form ---------- */
+input,select,textarea{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:12px;
+  font-size:14px;background:#fff;color:var(--text);}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--green-600);
+  box-shadow:0 0 0 3px var(--green-100);}
+label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:10px 0 4px;}
+
+.btn{padding:10px 15px;border-radius:13px;border:1.5px solid var(--border);background:#fff;
+  font-size:13px;font-weight:700;color:var(--text);transition:transform .08s ease;}
+.btn:active{transform:scale(.97);}
+.btn-accent{background:linear-gradient(135deg, var(--green-500), var(--green-700));color:#fff;
+  border-color:transparent;box-shadow:0 6px 16px rgba(31,174,92,.3);}
+.btn-danger{color:var(--danger);border-color:var(--danger-100);background:var(--danger-100);}
+.btn-sm{padding:7px 11px;font-size:12px;}
 .btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;}
 
-.tag{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;}
-.tag-takhossus{background:#fbe8d0;color:#8a5a13;}
+/* Chip / tag berwarna -- mengikuti pola Kasgo (kategori berwarna beda) */
+.tag{display:inline-block;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;}
+.tag-takhossus{background:var(--orange-100);color:#96650c;}
 .tag-nontakhossus{background:var(--green-100);color:var(--green-700);}
-.pill-btn{border:1px solid var(--border);border-radius:20px;padding:4px 12px;font-size:12px;background:#fff;}
+.pill-btn{border:1.5px solid var(--border);border-radius:20px;padding:5px 13px;font-size:12px;
+  background:#fff;font-weight:600;}
 .pill-btn.on{background:var(--green-600);color:#fff;border-color:var(--green-600);}
 
 .chip-group{display:flex;flex-wrap:wrap;gap:6px;}
 
-.tabs{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;}
-.tab{padding:7px 14px;border-radius:20px;border:1px solid var(--border);background:#fff;font-size:13px;white-space:nowrap;}
-.tab.active{background:var(--green-600);color:#fff;border-color:var(--green-600);}
+.tabs{display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;padding-bottom:2px;}
+.tab{padding:8px 15px;border-radius:20px;border:1.5px solid var(--border);background:#fff;
+  font-size:13px;font-weight:600;white-space:nowrap;}
+.tab.active{background:var(--green-600);color:#fff;border-color:var(--green-600);
+  box-shadow:0 4px 10px rgba(31,174,92,.28);}
 
 /* Judul seksi menonjol (mis. Riwayat Keuangan / Riwayat Hafalan / Daftar Tidak Hadir) */
-.section-heading{background:var(--green-600);color:#fff;font-weight:800;font-size:15px;text-transform:uppercase;letter-spacing:.4px;padding:9px 12px;border-radius:8px;margin:14px 0 10px;}
+.section-heading{background:linear-gradient(135deg, var(--green-600), var(--green-700));color:#fff;
+  font-weight:800;font-size:14px;letter-spacing:.2px;padding:11px 14px;border-radius:14px;margin:14px 0 10px;
+  box-shadow:0 6px 16px rgba(31,174,92,.22);}
 .section-heading:first-child{margin-top:0;}
 
 /* Kotak highlight untuk angka penting (Total hafalan, Sedang dihafal, dsb) */
-.highlight-box{background:#fff4d6;border:1px solid #f0d878;border-radius:10px;padding:10px 12px;margin-bottom:8px;}
-.highlight-box .hb-label{font-size:11px;font-weight:700;color:#8a5a13;text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px;}
-.highlight-box .hb-value{font-size:17px;font-weight:800;color:#1f3327;text-transform:uppercase;letter-spacing:.2px;}
+.highlight-box{background:var(--orange-100);border:1.5px solid #f4d9a0;border-radius:var(--radius-sm);
+  padding:11px 13px;margin-bottom:8px;}
+.highlight-box .hb-label{font-size:11px;font-weight:700;color:#96650c;letter-spacing:.3px;margin-bottom:2px;}
+.highlight-box .hb-value{font-size:17px;font-weight:800;color:var(--green-900);letter-spacing:.2px;}
 
 table{width:100%;border-collapse:collapse;font-size:13px;}
-th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--border);}
-th{color:var(--muted);font-weight:600;font-size:12px;}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border);}
+th{color:var(--muted);font-weight:700;font-size:12px;}
 
-/* Modal */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;z-index:100;}
+/* ---------- Modal ---------- */
+.modal-overlay{position:fixed;inset:0;background:rgba(15,36,23,.5);display:flex;align-items:flex-end;
+  justify-content:center;z-index:100;backdrop-filter:blur(2px);}
 @media (min-width:640px){.modal-overlay{align-items:center;}}
-.modal-box{background:#fff;border-radius:16px 16px 0 0;padding:18px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto;}
-@media (min-width:640px){.modal-box{border-radius:16px;}}
-.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-.modal-close{background:none;border:none;font-size:20px;color:var(--muted);}
+.modal-box{background:#fff;border-radius:24px 24px 0 0;padding:20px;width:100%;max-width:480px;
+  max-height:88vh;overflow-y:auto;box-shadow:0 -10px 30px rgba(15,36,23,.2);}
+@media (min-width:640px){.modal-box{border-radius:22px;}}
+.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.modal-close{background:var(--bg);border:none;font-size:18px;color:var(--muted);width:30px;height:30px;
+  border-radius:10px;}
 
-/* Toolbar pencarian + filter program (Hafalan) */
-.hafalan-toolbar{display:flex;align-items:center;gap:8px;background:var(--green-100);border-radius:var(--radius);padding:10px;margin-bottom:12px;flex-wrap:wrap;}
+/* Toolbar pencarian + filter program (Hafalan) -- pill search ala Kasgo */
+.hafalan-toolbar{display:flex;align-items:center;gap:8px;background:var(--green-50);
+  border:1px solid var(--green-100);border-radius:var(--radius);padding:10px;margin-bottom:12px;flex-wrap:wrap;}
 .hafalan-toolbar .search-box{position:relative;flex:2;min-width:170px;}
-.hafalan-toolbar .search-box input{padding-left:32px;background:var(--card);}
-.hafalan-toolbar .search-box .search-ic{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:14px;pointer-events:none;}
-.hafalan-toolbar select{flex:1;min-width:130px;width:auto;background:var(--card);}
-.icon-btn-square{flex-shrink:0;width:38px;height:38px;padding:0;border-radius:8px;border:2px solid var(--text);background:var(--card);font-size:16px;display:flex;align-items:center;justify-content:center;}
-.icon-btn-square:active{background:var(--green-100);}
+.hafalan-toolbar .search-box input{padding-left:34px;background:var(--card);border-radius:20px;}
+.hafalan-toolbar .search-box .search-ic{position:absolute;left:11px;top:50%;transform:translateY(-50%);
+  color:var(--muted);font-size:14px;pointer-events:none;}
+.hafalan-toolbar select{flex:1;min-width:130px;width:auto;background:var(--card);border-radius:20px;}
+.icon-btn-square{flex-shrink:0;width:40px;height:40px;padding:0;border-radius:13px;border:none;
+  background:var(--green-700);color:#fff;font-size:16px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 6px 14px rgba(28,107,63,.3);}
+.icon-btn-square:active{transform:scale(.95);}
 
-/* QR Scanner (absensi) */
-.qr-reader-box{width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:230px;position:relative;}
+/* ---------- QR Scanner (absensi) ---------- */
+.qr-reader-box{width:100%;border-radius:16px;overflow:hidden;background:#000;min-height:230px;position:relative;}
 .qr-reader-box video{width:100%!important;display:block;}
-.scan-feedback{margin-top:10px;padding:9px 10px;border-radius:8px;font-size:13px;font-weight:600;text-align:center;min-height:18px;background:var(--bg);color:var(--muted);}
-.scan-feedback.ok{background:#e2f3e7;color:#1f6b3a;}
-.scan-feedback.err{background:#fbe7e5;color:#a33;}
-.btn-torch{background:#fff;border:1px solid var(--border);}
-.btn-torch.on{background:#3b3b3b;color:#ffd873;border-color:#3b3b3b;}
+.scan-feedback{margin-top:10px;padding:10px 12px;border-radius:12px;font-size:13px;font-weight:700;
+  text-align:center;min-height:18px;background:var(--bg);color:var(--muted);}
+.scan-feedback.ok{background:var(--green-100);color:var(--green-700);}
+.scan-feedback.err{background:var(--danger-100);color:var(--danger);}
+.btn-torch{background:#fff;border:1.5px solid var(--border);}
+.btn-torch.on{background:var(--orange);color:#fff;border-color:var(--orange);}
 
-/* Attendance grid */
-.att-row{display:flex;align-items:center;justify-content:space-between;padding:9px 4px;border-bottom:1px solid var(--border);}
-.att-opts{display:flex;gap:6px;}
-.att-btn{width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:#fff;font-size:13px;font-weight:700;}
-.att-btn.h.on{background:#2f7d4f;color:#fff;border-color:#2f7d4f;}
-.att-btn.a.on{background:#c0392b;color:#fff;border-color:#c0392b;}
-.att-btn.i.on{background:#d19a24;color:#fff;border-color:#d19a24;}
-.att-btn.s.on{background:#2980b9;color:#fff;border-color:#2980b9;}
+/* ---------- Attendance grid -- tombol status besar ala tap-to-select kasir ---------- */
+.att-row{display:flex;align-items:center;justify-content:space-between;padding:10px 6px;border-radius:14px;}
+.att-row:nth-child(odd){background:var(--green-50);}
+.att-opts{display:flex;gap:7px;}
+.att-btn{width:37px;height:37px;border-radius:11px;border:1.5px solid var(--border);background:#fff;
+  font-size:13px;font-weight:800;transition:transform .08s ease;}
+.att-btn:active{transform:scale(.92);}
+.att-btn.h.on{background:var(--green-600);color:#fff;border-color:var(--green-600);
+  box-shadow:0 4px 10px rgba(31,174,92,.35);}
+.att-btn.a.on{background:var(--danger);color:#fff;border-color:var(--danger);
+  box-shadow:0 4px 10px rgba(229,72,77,.32);}
+.att-btn.i.on{background:var(--orange);color:#fff;border-color:var(--orange);
+  box-shadow:0 4px 10px rgba(245,158,11,.32);}
+.att-btn.s.on{background:#2f86d6;color:#fff;border-color:#2f86d6;
+  box-shadow:0 4px 10px rgba(47,134,214,.32);}
 .att-btn.hd{font-size:11px;}
-.att-btn.hd.on{background:#8e44ad;color:#fff;border-color:#8e44ad;}
+.att-btn.hd.on{background:var(--purple);color:#fff;border-color:var(--purple);
+  box-shadow:0 4px 10px rgba(124,92,252,.32);}
 
-/* Printable card */
-.id-card{width:360px;height:220px;border-radius:16px;background:linear-gradient(135deg,#eef4ee,#dbe8dd);border:1px solid var(--border);padding:0;position:relative;overflow:hidden;margin:0 auto;box-shadow:0 4px 16px rgba(31,51,39,0.12);}
-.id-card::before{content:"";position:absolute;top:0;left:0;right:0;height:6px;background:linear-gradient(90deg,#3b5940,#6b9b6f,#d19a24);}
-.id-card .head{display:flex;align-items:center;gap:8px;background:#1f3327;padding:8px 14px;margin-top:6px;}
+/* ---------- Printable card (kartu santri) ---------- */
+.id-card{width:360px;height:220px;border-radius:18px;background:linear-gradient(135deg,#eef8f1,#d7ecdd);
+  border:1px solid var(--border);padding:0;position:relative;overflow:hidden;margin:0 auto;
+  box-shadow:0 8px 22px rgba(15,36,23,.16);}
+.id-card::before{content:"";position:absolute;top:0;left:0;right:0;height:6px;
+  background:linear-gradient(90deg, var(--green-600), var(--green-500), var(--orange));}
+.id-card .head{display:flex;align-items:center;gap:8px;background:var(--green-900);padding:8px 14px;margin-top:6px;}
 .id-card .head img{width:24px;height:24px;border-radius:50%;background:#fff;padding:2px;}
-.id-card .head .pn{font-size:10px;font-weight:700;color:#eef4ee;letter-spacing:.3px;}
+.id-card .head .pn{font-size:10px;font-weight:700;color:#eef8f1;letter-spacing:.3px;}
 .id-card .body{display:flex;gap:10px;padding:12px 14px;align-items:stretch;}
 .id-card .left{display:flex;gap:10px;flex:1;min-width:0;}
-.id-card .photo{width:66px;height:84px;border-radius:8px;object-fit:cover;background:#ccc;flex-shrink:0;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.15);}
-.id-card .photo-placeholder{display:flex;align-items:center;justify-content:center;font-size:28px;color:#8aa38d;background:#e4ece3;}
-.id-card .info{font-size:10.5px;line-height:1.55;color:#233a2b;overflow:hidden;}
-.id-card .info .nm{font-size:14px;font-weight:800;margin-bottom:3px;color:#1f3327;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.id-card .qr{flex-shrink:0;width:118px;height:118px;background:#fff;padding:4px;border-radius:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12);align-self:center;}
+.id-card .photo{width:66px;height:84px;border-radius:10px;object-fit:cover;background:#ccc;flex-shrink:0;
+  border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.15);}
+.id-card .photo-placeholder{display:flex;align-items:center;justify-content:center;font-size:28px;
+  color:#7fa987;background:var(--green-100);}
+.id-card .info{font-size:10.5px;line-height:1.55;color:#16321f;overflow:hidden;}
+.id-card .info .nm{font-size:14px;font-weight:800;margin-bottom:3px;color:var(--green-900);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.id-card .qr{flex-shrink:0;width:118px;height:118px;background:#fff;padding:4px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.12);align-self:center;}
 .id-card-wali{background:linear-gradient(135deg,#eef1f7,#dbe2ee);}
-.id-card-wali::before{background:linear-gradient(90deg,#2f5d9d,#6f93c9,#d19a24);}
+.id-card-wali::before{background:linear-gradient(90deg,#2f5d9d,#6f93c9, var(--orange));}
 .id-card-wali .head{background:#1e3a5f;}
 .id-card-mahram{background:linear-gradient(135deg,#f7f0ee,#eedcd7);}
-.id-card-mahram::before{background:linear-gradient(90deg,#9d4a2f,#c98a6f,#d19a24);}
+.id-card-mahram::before{background:linear-gradient(90deg,#9d4a2f,#c98a6f, var(--orange));}
 .id-card-mahram .head{background:#5f2a1e;}
 .print-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px;}
 .print-table th,.print-table td{border:1px solid #999;padding:5px 8px;text-align:left;}
-.print-table th{background:#e4ece3;}
+.print-table th{background:var(--green-100);}
 @media print{
   body *{visibility:hidden;}
   #printArea, #printArea *{visibility:visible;}

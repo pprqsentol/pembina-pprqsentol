@@ -4,8 +4,8 @@
   "description": "Aplikasi input absensi dan hafalan santri untuk pembina Pondok Roudhotul Qur'an",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#f4f5f0",
-  "theme_color": "#3b5940",
+  "background_color": "#f4f7f4",
+  "theme_color": "#153a24",
   "orientation": "any",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
