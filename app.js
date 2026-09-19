@@ -11,6 +11,31 @@ const SUPABASE_KEY = 'sb_publishable_KKSw-wparSwNbIvR9wHhyQ_Pc1NdcKG';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+/* PERBAIKAN -- salah satu penyebab "sync harian gagal" yang KETEMU dari log
+   Supabase: percobaan refresh sesi (refresh_token) yang GAGAL -- biasa
+   terjadi kalau HP lama tidak dibuka (semalaman/berhari-hari) sehingga
+   sesi login sudah basi begitu app dibuka lagi. Sebelumnya kejadian ini
+   TIDAK ditangani sama sekali: app diam saja, pembina cuma melihat layar
+   kosong/macet tanpa tahu harus login ulang. Listener ini mendengarkan
+   kalau supabase-js sendiri menyimpulkan sesi sudah tidak valid lagi
+   (event 'SIGNED_OUT' -- termasuk saat refresh token ditolak server) dan
+   langsung mengembalikan pembina ke layar login dengan pesan yang jelas,
+   API SESI sekali lagi -- daripada dibiarkan macet. */
+sb.auth.onAuthStateChange((event) => {
+  if(event === 'SIGNED_OUT' && SESSION){
+    SESSION = null;
+    if(autoRefreshTimer){ clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+    document.getElementById('app').style.display = 'none';
+    const loginScreen = document.getElementById('loginScreen');
+    loginScreen.style.display = 'flex';
+    const errEl = document.getElementById('loginError');
+    if(errEl){
+      errEl.textContent = 'Sesi login berakhir (mungkin HP lama tidak dibuka). Silakan masuk lagi.';
+      errEl.style.display = 'block';
+    }
+  }
+});
+
 /* Mengubah karakter khusus HTML (<, >, &, ", ') jadi bentuk aman sebelum
    ditampilkan, supaya teks bebas-ketik dari pengguna lain (mis. nama santri
    yang diisi admin_pusat) tidak bisa dieksekusi sebagai kode HTML/JS saat
@@ -361,12 +386,35 @@ let dbRevision = 0;
    (.range() per PAGE_SIZE baris, diulang sampai habis) supaya tidak ada
    satupun baris yang kepotong walau tabelnya sudah besar. */
 const PAGE_SIZE = 1000;
+
+/* PERBAIKAN -- "full sync sekali sehari kadang gagal":
+   Sebelumnya SATU error jaringan sesaat (timeout, sinyal HP putus-putus,
+   dsb) langsung membatalkan seluruh proses loadAll(), termasuk tabel lain
+   yang sudah/sedang berhasil diambil. Padahal kegagalan semacam itu
+   biasanya cuma sesaat dan akan berhasil kalau dicoba ulang beberapa detik
+   kemudian. queryDenganRetry() membungkus SATU halaman query supabase,
+   dicoba ulang sampai MAKS_RETRY kali (jeda makin lama tiap percobaan)
+   sebelum akhirnya menyerah -- dipakai oleh fetchAllRows & fetchRowsSince
+   di bawah supaya full-sync harian jauh lebih tahan terhadap sinyal HP
+   yang tidak stabil. */
+const MAKS_RETRY = 3;
+async function queryDenganRetry(jalankanQuery){
+  let errorTerakhir;
+  for(let percobaan = 0; percobaan <= MAKS_RETRY; percobaan++){
+    if(percobaan > 0) await new Promise(r => setTimeout(r, percobaan * 1500));
+    const { data, error } = await jalankanQuery();
+    if(!error) return data;
+    errorTerakhir = error;
+    console.warn('Query gagal (percobaan '+(percobaan+1)+'/'+(MAKS_RETRY+1)+'):', error.message || error);
+  }
+  throw errorTerakhir;
+}
+
 async function fetchAllRows(makeQuery){
   let rows = [];
   let from = 0;
   while(true){
-    const { data, error } = await makeQuery().range(from, from + PAGE_SIZE - 1);
-    if(error) throw error;
+    const data = await queryDenganRetry(()=> makeQuery().range(from, from + PAGE_SIZE - 1));
     rows = rows.concat(data || []);
     if(!data || data.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
@@ -386,10 +434,11 @@ async function fetchRowsSince(makeQuery, sejak){
   let rows = [];
   let from = 0;
   while(true){
-    let q = makeQuery();
-    if(sejak) q = q.gt('updated_at', sejak);
-    const { data, error } = await q.order('updated_at', { ascending: true }).range(from, from + PAGE_SIZE - 1);
-    if(error) throw error;
+    const data = await queryDenganRetry(()=>{
+      let q = makeQuery();
+      if(sejak) q = q.gt('updated_at', sejak);
+      return q.order('updated_at', { ascending: true }).range(from, from + PAGE_SIZE - 1);
+    });
     rows = rows.concat(data || []);
     if(!data || data.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
@@ -464,6 +513,30 @@ const DELTA_TABLES = [
     keyFn: t => t.id }
 ];
 
+/* PERBAIKAN -- menekan egress full-sync harian TANPA mengurangi fungsi
+   deteksi-penghapusan: sebelum menarik SEMUA baris suatu tabel, tanya dulu
+   ke server berapa JUMLAH barisnya saja (select head:true, count:'exact'
+   -- Supabase/PostgREST hanya mengembalikan angka di header response,
+   TIDAK menarik isi baris satu pun, jadi ukurannya ~0 byte badan data).
+   Kalau jumlah itu SAMA dengan jumlah baris yang sudah ada di cache lokal
+   HP, berarti tidak ada baris yang hilang/bertambah di server sejak
+   delta sync terakhir -- full download tabel itu untuk hari ini boleh
+   dilewati dengan aman (perubahan ISI baris tetap sudah tertangkap lewat
+   delta sync biasa, cuma yang dicek di sini PENGHAPUSAN/PENAMBAHAN net).
+   Kalau jumlahnya BEDA (atau cek count-nya sendiri gagal), tetap full
+   download seperti biasa -- supaya deteksi penghapusan tidak pernah
+   kelewatan. */
+async function hitungBarisServer(table){
+  try{
+    const { count, error } = await sb.from(table).select('id', { count: 'exact', head: true });
+    if(error) throw error;
+    return count;
+  }catch(e){
+    console.warn('Gagal hitung jumlah baris server untuk '+table+' (lanjut full download seperti biasa):', e);
+    return null;
+  }
+}
+
 /* loadAll(opts): opts.forceFull=true memaksa AMBIL PENUH semua tabel
    delta sekali ini saja (dipakai tombol Refresh manual -- lihat
    refreshApp()), supaya pembina selalu punya cara menyamakan data 100%
@@ -508,7 +581,23 @@ async function loadAll(opts) {
        supaya gagal sendiri-sendiri tidak menggagalkan Promise.all --
        gantinya fetchAllRowsSafe dulu. */
     const deltaPromises = DELTA_TABLES.map(spec => {
-      const sejak = paksaPenuh ? null : (syncMeta[spec.key] || null);
+      if(paksaPenuh){
+        const p = (async () => {
+          const jumlahLokal = (DB[spec.key] || []).length;
+          const jumlahServer = await hitungBarisServer(spec.table);
+          if(jumlahServer !== null && jumlahServer === jumlahLokal){
+            /* Jumlah cocok -- lewati full download tabel ini hari ini. */
+            return { spec, sejak: syncMeta[spec.key] || null, rows: [], gagal: false, dilewati: true };
+          }
+          const rows = await fetchRowsSince(()=> sb.from(spec.table).select(spec.cols), null);
+          return { spec, sejak: null, rows, gagal: false };
+        })();
+        return spec.wajib ? p : p.catch(e => {
+          console.warn('Sinkron tabel '+spec.table+' gagal, pakai data lokal yang ada:', e);
+          return { spec, sejak: null, rows: null, gagal: true };
+        });
+      }
+      const sejak = syncMeta[spec.key] || null;
       const p = fetchRowsSince(()=> sb.from(spec.table).select(spec.cols), sejak)
         .then(rows => ({ spec, sejak, rows, gagal: false }));
       return spec.wajib ? p : p.catch(e => {
@@ -531,8 +620,9 @@ async function loadAll(opts) {
 
     let semuaPenuhBerhasil = true;
     for(const hasil of deltaHasil){
-      const { spec, sejak, rows, gagal } = hasil;
+      const { spec, sejak, rows, gagal, dilewati } = hasil;
       if(gagal){ semuaPenuhBerhasil = false; continue; }
+      if(dilewati) continue; // jumlah baris cocok, tidak ada yang perlu ditimpa
       const mapped = rows.map(spec.map);
       if(sejak){
         /* Delta: tambal/timpa baris yang berubah saja ke cache lokal
@@ -558,10 +648,17 @@ async function loadAll(opts) {
 
     dbRevision++;
     OFFLINE_MODE = false;
+    SYNC_HARIAN_GAGAL = null;
     idbSave({ DB, syncMeta });
   } catch(e){
     if(dbRevision !== revisionAtStart) return; // sudah ketinggalan, jangan timpa dengan cadangan offline juga
     console.warn('Gagal ambil data dari Supabase, coba pakai cadangan offline:', e);
+    /* PERBAIKAN -- supaya pembina TAHU kalau sync harian gagal (sebelumnya
+       cuma tercatat di console browser yang tidak pernah dilihat), catat
+       pesan error terakhir di sini -- ditampilkan lewat renderOfflineBanner()
+       (lihat enterApp/refreshApp) sebagai peringatan kecil, bukan cuma
+       banner "mode offline" yang generik. */
+    SYNC_HARIAN_GAGAL = (e && e.message) ? e.message : 'Koneksi ke server gagal.';
     const cadangan = await idbLoad();
     if(dbRevision !== revisionAtStart) return;
     if(terapkanCadangan(cadangan)){
@@ -572,6 +669,7 @@ async function loadAll(opts) {
     }
   }
 }
+let SYNC_HARIAN_GAGAL = null;
 
 const NAV_ALL = [
   {id:'absensi', label:'Absensi', icon:'&#10003;'},
@@ -651,20 +749,28 @@ async function logout() {
   document.getElementById('app').style.display='none';
   document.getElementById('loginScreen').style.display='flex';
 }
-function enterApp(){
-  document.getElementById('loginScreen').style.display='none';
-  document.getElementById('app').style.display='block';
-  const roleLabel = SESSION.tugas === 'hafalan' ? 'Pembina Hafalan' : (SESSION.tugas === 'absensi' ? 'Pembina Absensi' : 'Pembina');
-  document.getElementById('userLabel').textContent = SESSION.nama ? (SESSION.nama + ' \u00b7 ' + roleLabel) : roleLabel;
+/* PERBAIKAN -- dipakai bersama oleh enterApp() & refreshApp() supaya kalau
+   sync harian (atau refresh mana pun) gagal, pembina LANGSUNG lihat kenapa
+   -- bukan cuma "Mode offline" generik yang bisa membingungkan. */
+function renderOfflineBanner(){
   const oldBanner = document.getElementById('offlineBanner');
   if(oldBanner) oldBanner.remove();
   if(OFFLINE_MODE){
     const b = document.createElement('div');
     b.id = 'offlineBanner';
     b.style.cssText = 'background:#fdecea;color:#c0392b;padding:8px 14px;font-size:13px;text-align:center';
-    b.textContent = '\u26A0 Mode offline: menampilkan cadangan data terakhir. Tambah/ubah data tidak tersedia sampai internet kembali.';
+    b.textContent = SYNC_HARIAN_GAGAL
+      ? ('\u26A0 Gagal sinkron data terbaru (' + SYNC_HARIAN_GAGAL + '). Menampilkan cadangan data terakhir -- coba tekan Refresh, atau cek sinyal/internet HP.')
+      : '\u26A0 Mode offline: menampilkan cadangan data terakhir. Tambah/ubah data tidak tersedia sampai internet kembali.';
     document.getElementById('app').prepend(b);
   }
+}
+function enterApp(){
+  document.getElementById('loginScreen').style.display='none';
+  document.getElementById('app').style.display='block';
+  const roleLabel = SESSION.tugas === 'hafalan' ? 'Pembina Hafalan' : (SESSION.tugas === 'absensi' ? 'Pembina Absensi' : 'Pembina');
+  document.getElementById('userLabel').textContent = SESSION.nama ? (SESSION.nama + ' \u00b7 ' + roleLabel) : roleLabel;
+  renderOfflineBanner();
   renderNav();
   const nav = navForSession();
   goPage(nav.some(i=>i.id===currentPage) ? currentPage : nav[0].id);
@@ -691,9 +797,10 @@ function startAutoRefresh(){
     if(modalRoot && modalRoot.innerHTML.trim() !== '') return; // ada modal input terbuka, jangan ganggu
     try{
       await loadAll();
+      renderOfflineBanner();
       if(currentPage==='absensi') renderAbsensiPage();
       else if(currentPage==='hafalan') renderHafalanPage();
-    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 20 detik lagi):', e); }
+    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 2 menit lagi):', e); }
   }, 120000);
 }
 
@@ -750,15 +857,7 @@ async function refreshApp(){
        biasa). Auto-refresh & sinkron setelah simpan tetap delta seperti
        biasa -- lihat catatan di loadAll(). */
     await loadAll({ forceFull: true });
-    const oldBanner = document.getElementById('offlineBanner');
-    if(oldBanner) oldBanner.remove();
-    if(OFFLINE_MODE){
-      const b = document.createElement('div');
-      b.id = 'offlineBanner';
-      b.style.cssText = 'background:#fdecea;color:#c0392b;padding:8px 14px;font-size:13px;text-align:center';
-      b.textContent = '\u26A0 Mode offline: menampilkan cadangan data terakhir. Tambah/ubah data tidak tersedia sampai internet kembali.';
-      document.getElementById('app').prepend(b);
-    }
+    renderOfflineBanner();
     goPage(currentPage, { noPush: true });
   } catch(e){
     console.error('Gagal refresh data:', e);
