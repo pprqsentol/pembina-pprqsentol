@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.pprqsentol.pembina",
+        "sha256_cert_fingerprints": ["95:1E:72:29:40:B6:4F:57:16:86:35:C3:A8:65:81:67:DF:07:91:D6:BD:DF:B6:66:1C:A8:A2:6F:E5:49:8E:D1"]
+      }
+    }]
