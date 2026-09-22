@@ -186,19 +186,21 @@ function formatJuzSekarang(santriId){
 
 /* ====== Tes Kenaikan Juz ======
    Lihat catatan yang sama di Aplikasi Pondok (app.js) -- logika kategori HARUS
-   identik di kedua aplikasi:
-   a) Takhossus, juz yang baru selesai termasuk 3/8/13/18/23/28 -> wajib baca
+   identik di kedua aplikasi. Nilai kolom `kategori` di database DIBATASI PERSIS
+   ke '1juz' atau '10juz' (lihat CHECK constraint tes_kenaikan_juz_kategori_check)
+   -- BUKAN 'a'/'b'. Kalau nilai lain dikirim, insert akan GAGAL ditolak database.
+   10juz) Takhossus, juz yang baru selesai termasuk 3/8/13/18/23/28 -> wajib baca
       10 juz TERAKHIR hafalannya (5 juz kalau total hafalan belum sampai 10
       juz). Batas waktu 15 hari.
-   b) Selain itu -> wajib membaca ulang 1 juz yang baru selesai, lancar.
+   1juz) Selain itu -> wajib membaca ulang 1 juz yang baru selesai, lancar.
       Batas waktu 7 hari. */
-const JUZ_TES_KATEGORI_A = [3, 8, 13, 18, 23, 28];
+const JUZ_TES_KATEGORI_10JUZ = [3, 8, 13, 18, 23, 28];
 function tentukanTesKenaikanJuz(program, juzSelesai, totalJuzSelesai){
-  if(program === 'Takhossus' && JUZ_TES_KATEGORI_A.includes(juzSelesai)){
+  if(program === 'Takhossus' && JUZ_TES_KATEGORI_10JUZ.includes(juzSelesai)){
     const syarat = Math.min(totalJuzSelesai, totalJuzSelesai >= 10 ? 10 : 5);
-    return { kategori: 'a', syaratJuz: Math.max(1, syarat), batasHari: 15 };
+    return { kategori: '10juz', syaratJuz: Math.max(1, syarat), batasHari: 15 };
   }
-  return { kategori: 'b', syaratJuz: 1, batasHari: 7 };
+  return { kategori: '1juz', syaratJuz: 1, batasHari: 7 };
 }
 function sisaHariTes(tes){
   const mulai = new Date(tes.tanggalMulai);
@@ -206,10 +208,11 @@ function sisaHariTes(tes){
   return Math.ceil((batas - new Date(todayStr()))/86400000);
 }
 function labelKategoriTes(tes){
-  return tes.kategori === 'a'
-    ? `Kategori A &mdash; baca ${tes.syaratJuz} juz terakhir hafalan`
-    : `Kategori B &mdash; baca ulang Juz ${tes.juzSelesai} (1 juz, lancar)`;
+  return tes.kategori === '10juz'
+    ? `Tes 10 Juz &mdash; baca ${tes.syaratJuz} juz terakhir hafalan`
+    : `Tes 1 Juz &mdash; baca ulang Juz ${tes.juzSelesai} (lancar)`;
 }
+
 
 /* ====== Posisi Muroja'ah SAAT INI (untuk sesi berikutnya) ======
    Sama prinsipnya seperti juzSekarang() di atas, tapi untuk Murojaah 1 /
