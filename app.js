@@ -186,19 +186,22 @@ function formatJuzSekarang(santriId){
 
 /* ====== Tes Kenaikan Juz ======
    Lihat catatan yang sama di Aplikasi Pondok (app.js) -- logika kategori HARUS
-   identik di kedua aplikasi:
-   a) Takhossus, juz yang baru selesai termasuk 3/8/13/18/23/28 -> wajib baca
-      10 juz TERAKHIR hafalannya (5 juz kalau total hafalan belum sampai 10
-      juz). Batas waktu 15 hari.
-   b) Selain itu -> wajib membaca ulang 1 juz yang baru selesai, lancar.
-      Batas waktu 7 hari. */
-const JUZ_TES_KATEGORI_A = [3, 8, 13, 18, 23, 28];
-function tentukanTesKenaikanJuz(program, juzSelesai, totalJuzSelesai){
-  if(program === 'Takhossus' && JUZ_TES_KATEGORI_A.includes(juzSelesai)){
-    const syarat = Math.min(totalJuzSelesai, totalJuzSelesai >= 10 ? 10 : 5);
-    return { kategori: 'a', syaratJuz: Math.max(1, syarat), batasHari: 15 };
+   identik di kedua aplikasi. Berlaku untuk SEMUA santri (Takhossus maupun
+   Non-Takhossus): begitu 1 juz tuntas (halaman ke-20), wajib tes 1 juz
+   terakhir dulu (baca ulang juz yang baru selesai, lancar) sebelum boleh
+   lanjut ke juz berikutnya. Lulus cukup ditandai oleh pembina. Batas 7 hari.
+
+   Khusus santri Takhossus: di juz milestone 8, 18, 28 (artinya blok 10 juz
+   barusan tuntas -- 29,30,1-8 / 9-18 / 19-28), tes 1 juz di atas DIGANTI tes
+   10 juz. Tes ini wajib disimak LANGSUNG oleh wali santri di pondok (bukan
+   cukup pembina saja) -- begitu tercatat, aplikasi wali santri menampilkan
+   notice supaya wali datang ke pondok. Batas 14 hari. */
+const JUZ_MILESTONE_10 = [8, 18, 28];
+function tentukanTesKenaikanJuz(program, juzSelesai){
+  if(program === 'Takhossus' && JUZ_MILESTONE_10.includes(juzSelesai)){
+    return { kategori: '10juz', syaratJuz: 10, batasHari: 14 };
   }
-  return { kategori: 'b', syaratJuz: 1, batasHari: 7 };
+  return { kategori: '1juz', syaratJuz: 1, batasHari: 7 };
 }
 function sisaHariTes(tes){
   const mulai = new Date(tes.tanggalMulai);
@@ -206,10 +209,11 @@ function sisaHariTes(tes){
   return Math.ceil((batas - new Date(todayStr()))/86400000);
 }
 function labelKategoriTes(tes){
-  return tes.kategori === 'a'
-    ? `Kategori A &mdash; baca ${tes.syaratJuz} juz terakhir hafalan`
-    : `Kategori B &mdash; baca ulang Juz ${tes.juzSelesai} (1 juz, lancar)`;
+  return tes.kategori === '10juz'
+    ? `Tes 10 Juz (Takhossus) &mdash; wajib disimak langsung oleh wali santri di pondok`
+    : `Tes 1 Juz &mdash; baca ulang Juz ${tes.juzSelesai} (lancar)`;
 }
+function labelKategoriSingkat(tes){ return tes.kategori === '10juz' ? 'Tes 10 Juz' : 'Tes 1 Juz'; }
 
 /* ====== Posisi Muroja'ah SAAT INI (untuk sesi berikutnya) ======
    Sama prinsipnya seperti juzSekarang() di atas, tapi untuk Murojaah 1 /
@@ -505,11 +509,11 @@ const DELTA_TABLES = [
       tanggal: i.tanggal, metode: i.metode || '', catatan: i.catatan || '' }),
     keyFn: i => i.id },
   { key: 'tesKenaikanJuz', table: 'tes_kenaikan_juz', wajib: false,
-    cols: 'id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan,updated_at',
+    cols: 'id,santri_id,juz_selesai,kategori,syarat_juz,tanggal_mulai,batas_hari,status,tanggal_lulus,dicatat_oleh,catatan,wali_hadir,updated_at',
     map: t => ({ id: String(t.id), santriId: String(t.santri_id), juzSelesai: t.juz_selesai, kategori: t.kategori,
       syaratJuz: t.syarat_juz, tanggalMulai: t.tanggal_mulai, batasHari: t.batas_hari,
       status: t.status, tanggalLulus: t.tanggal_lulus || null,
-      dicatatOleh: t.dicatat_oleh || '', catatan: t.catatan || '' }),
+      dicatatOleh: t.dicatat_oleh || '', catatan: t.catatan || '', waliHadir: !!t.wali_hadir }),
     keyFn: t => t.id }
 ];
 
@@ -1598,8 +1602,7 @@ async function saveHafalan(santriId, kegiatanId){
 async function buatTesKenaikanJuzJikaPerlu(santriId, juzSelesai, tanggal){
   const s = DB.santri.find(x=>x.id===santriId);
   if(!s) return;
-  const totalJuzSelesai = posisiJuz(juzSelesai);
-  const info = tentukanTesKenaikanJuz(s.program, juzSelesai, totalJuzSelesai);
+  const info = tentukanTesKenaikanJuz(s.program, juzSelesai);
   try{
     const { error } = await sb.from('tes_kenaikan_juz').insert({
       santri_id: santriId, juz_selesai: juzSelesai, kategori: info.kategori,
@@ -1616,6 +1619,7 @@ function openTesKenaikanJuzModal(santriId, kegiatanId, tes){
   const s = DB.santri.find(x=>x.id===santriId);
   const sisa = sisaHariTes(tes);
   const overdue = sisa < 0;
+  const wajibWali = tes.kategori === '10juz';
   showModal('Tes Kenaikan Juz - '+s.nama, `
     <p>Santri sudah menuntaskan <b>Juz ${tes.juzSelesai}</b> dan wajib melalui <b>Tes Kenaikan Juz</b> dulu sebelum boleh lanjut ke juz berikutnya.</p>
     <div class="card" style="margin:10px 0">
@@ -1623,20 +1627,31 @@ function openTesKenaikanJuzModal(santriId, kegiatanId, tes){
       <div class="muted" style="margin-top:4px">Mulai: ${tes.tanggalMulai} &middot; Batas: ${tes.batasHari} hari</div>
       <div style="margin-top:4px">${overdue ? `<b style="color:var(--danger)">Sudah lewat ${Math.abs(sisa)} hari dari batas waktu</b>` : `Sisa waktu: <b>${sisa} hari</b>`}</div>
     </div>
-    <p class="muted">Gunakan kegiatan Muroja&rsquo;ah untuk latihan bacaan santri selama masa tes berlangsung. Tandai Lulus di bawah setelah santri dinyatakan lancar.</p>
+    ${wajibWali ? `<p class="muted">Wali santri sudah ditampilkan notice di aplikasi Wali Santri untuk datang ke pondok. Tes ini baru boleh ditandai lulus setelah wali benar-benar datang dan menyimak langsung hafalan santri.</p>` : `<p class="muted">Gunakan kegiatan Muroja&rsquo;ah untuk latihan bacaan santri selama masa tes berlangsung. Tandai Lulus di bawah setelah santri dinyatakan lancar.</p>`}
     <label>Catatan penilaian (opsional)</label>
     <textarea id="tkj_catatan" rows="2" placeholder="Contoh: lancar semua, sedikit tersendat di juz 5"></textarea>
+    ${wajibWali ? `<label style="display:flex;align-items:center;gap:8px;margin-top:10px">
+      <input type="checkbox" id="tkj_wali_hadir" onchange="document.getElementById('tkj_btn_lulus').disabled = !this.checked">
+      <span>Wali santri sudah hadir &amp; menyimak langsung hafalan santri di pondok</span>
+    </label>` : ''}
     <div class="btn-row">
-      <button class="btn btn-accent" onclick="lulusTesKenaikanJuz('${tes.id}','${santriId}','${kegiatanId}')">&#10003; Tandai Lulus</button>
+      <button class="btn btn-accent" id="tkj_btn_lulus" ${wajibWali ? 'disabled' : ''} onclick="lulusTesKenaikanJuz('${tes.id}','${santriId}','${kegiatanId}')">&#10003; Tandai Lulus</button>
       <button class="btn" onclick="closeModal()">Tutup</button>
     </div>
   `);
 }
 async function lulusTesKenaikanJuz(tesId, santriId, kegiatanId){
   const catatan = val('tkj_catatan');
+  const tes = DB.tesKenaikanJuz.find(t=>t.id===tesId);
+  const waliHadirEl = document.getElementById('tkj_wali_hadir');
+  if(tes && tes.kategori === '10juz' && !(waliHadirEl && waliHadirEl.checked)){
+    alert('Centang dulu konfirmasi bahwa wali santri sudah hadir & menyimak langsung.');
+    return;
+  }
   const { error } = await sb.from('tes_kenaikan_juz').update({
     status: 'lulus', tanggal_lulus: todayStr(),
-    dicatat_oleh: SESSION.nama || SESSION.email, catatan: catatan || null
+    dicatat_oleh: SESSION.nama || SESSION.email, catatan: catatan || null,
+    wali_hadir: tes && tes.kategori === '10juz' ? true : null
   }).eq('id', tesId);
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
   await loadAll();
@@ -1983,7 +1998,7 @@ function renderRiwayatBody(){
       <div class="section-heading">Riwayat Tes Kenaikan Juz</div>
       ${riwayatTes.length===0?'<p class="muted">Belum pernah ada tes kenaikan juz.</p>':`
         <table><tr><th>Juz Selesai</th><th>Kategori</th><th>Wajib Baca</th><th>Mulai</th><th>Batas</th><th>Status</th></tr>
-        ${riwayatTes.map(t=>`<tr><td>${t.juzSelesai}</td><td>${t.kategori.toUpperCase()}</td><td>${t.syaratJuz} juz</td><td>${t.tanggalMulai}</td><td>${t.batasHari} hari</td><td>${t.status==='lulus'?`Lulus (${t.tanggalLulus||'-'})`:'Menunggu'}</td></tr>`).join('')}
+        ${riwayatTes.map(t=>`<tr><td>${t.juzSelesai}</td><td>${labelKategoriSingkat(t)}</td><td>${t.syaratJuz} juz</td><td>${t.tanggalMulai}</td><td>${t.batasHari} hari</td><td>${t.status==='lulus'?`Lulus (${t.tanggalLulus||'-'})`:'Menunggu'}</td></tr>`).join('')}
         </table>`}
     `;
   }
