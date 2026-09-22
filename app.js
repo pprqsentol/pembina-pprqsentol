@@ -135,6 +135,20 @@ function hafalanKegiatanList(){
 const JUZ_ORDER = [29, 30, ...Array.from({length:28}, (_,i)=>i+1)];
 function posisiJuz(juz){ return JUZ_ORDER.indexOf(juz) + 1; }
 function juzSetelah(juz){ const p = posisiJuz(juz); return JUZ_ORDER[p % JUZ_ORDER.length]; }
+/* Kebalikan dari pagesFromJuzAwal (Aplikasi Pondok, dipakai saat mengisi
+   hafalan_awal santri) -- dipakai di sini untuk mencari juz/halaman mulai
+   yang benar kalau santri BELUM pernah ada input hafalan lewat aplikasi
+   sama sekali, tapi sudah punya hafalan_awal (mis. santri pindahan). Tanpa
+   ini, juzSekarang() akan selalu mengira santri mulai dari Juz 29 halaman 0
+   walau hafalan_awal-nya sudah besar -- lihat juzSekarang() di bawah. */
+function juzAwalFromPages(totalPages){
+  const total = totalPages||0;
+  if(total<=0) return { juz: 0, halaman: 0 };
+  if(total>=JUZ_ORDER.length*20) return { juz: JUZ_ORDER[JUZ_ORDER.length-1], halaman: 20 }; // full 30 juz
+  const posisi = Math.floor(total/20) + 1;
+  const halaman = total%20;
+  return { juz: JUZ_ORDER[posisi-1], halaman };
+}
 /* Posisi hafalan santri SAAT INI (untuk sesi berikutnya), dihitung dari
    entri `hafalan` (tambah hafalan) TERAKHIR:
    - keterangan "Lancar" (atau kosong/data lama) -> lanjut ke halaman
@@ -152,7 +166,20 @@ function programLabel(p){ return p === 'Idad' ? "I'dad" : (p || '-'); }
 function juzSekarang(santriId){
   const items = DB.hafalan.filter(h=>h.santriId===santriId)
     .slice().sort((a,b)=> a.tanggal===b.tanggal ? String(a.id).localeCompare(String(b.id)) : a.tanggal.localeCompare(b.tanggal));
-  if(items.length===0) return { juz: JUZ_ORDER[0], halaman: 0, mulai: true, adaData: false };
+  if(items.length===0){
+    /* Belum pernah ada input hafalan lewat aplikasi -- mulai dari hafalan_awal
+       (kalau ada), BUKAN selalu dianggap "mulai dari Juz 29" (lihat catatan
+       juzAwalFromPages di atas). SAMA PERSIS dengan Aplikasi Pondok. */
+    const s = DB.santri.find(x=>x.id===santriId);
+    const awal = s ? (s.hafalanAwal||0) : 0;
+    if(awal<=0) return { juz: JUZ_ORDER[0], halaman: 0, mulai: true, adaData: false };
+    if(awal>=JUZ_ORDER.length*20) return { juz: null, halaman: 0, mulai: false, adaData: true, khatam: true };
+    const posisi = juzAwalFromPages(awal);
+    if(posisi.halaman>=20){
+      return { juz: juzSetelah(posisi.juz), halaman: 0, mulai: true, adaData: true };
+    }
+    return { juz: posisi.juz, halaman: posisi.halaman, mulai: false, adaData: true };
+  }
   const last = items[items.length-1];
   if(last.keterangan === 'Ulang'){
     return {
@@ -177,6 +204,7 @@ function juzSekarang(santriId){
 }
 function formatJuzSekarang(santriId){
   const c = juzSekarang(santriId);
+  if(c.khatam) return `Sudah khatam 30 juz`;
   if(!c.adaData) return `Belum mulai (dimulai dari Juz ${c.juz})`;
   if(c.perluUlang) return `Juz ${c.juz}, halaman ${c.ulangDari}${c.ulangSampai>c.ulangDari?'-'+c.ulangSampai:''} (diulang, belum lancar)`;
   if(c.tesPending) return `Juz ${c.juz} selesai &mdash; menunggu Tes Kenaikan Juz`;
@@ -189,16 +217,16 @@ function formatJuzSekarang(santriId){
    identik di kedua aplikasi. Nilai kolom `kategori` di database DIBATASI PERSIS
    ke '1juz' atau '10juz' (lihat CHECK constraint tes_kenaikan_juz_kategori_check)
    -- BUKAN 'a'/'b'. Kalau nilai lain dikirim, insert akan GAGAL ditolak database.
-   10juz) Takhossus, juz yang baru selesai termasuk 3/8/13/18/23/28 -> wajib baca
-      10 juz TERAKHIR hafalannya (5 juz kalau total hafalan belum sampai 10
-      juz). Batas waktu 15 hari.
+   10juz) Takhossus, juz yang baru selesai adalah penutup satu BLOK 10 juz
+      (29,30,1-8 / 9-18 / 19-28) -> juz milestone-nya 8/18/28, wajib baca
+      10 juz TERAKHIR hafalannya (selalu genap 10 juz, karena tiap blok
+      memang 10 juz). Batas waktu 14 hari (dua pekan).
    1juz) Selain itu -> wajib membaca ulang 1 juz yang baru selesai, lancar.
       Batas waktu 7 hari. */
-const JUZ_TES_KATEGORI_10JUZ = [3, 8, 13, 18, 23, 28];
+const JUZ_TES_KATEGORI_10JUZ = [8, 18, 28];
 function tentukanTesKenaikanJuz(program, juzSelesai, totalJuzSelesai){
   if(program === 'Takhossus' && JUZ_TES_KATEGORI_10JUZ.includes(juzSelesai)){
-    const syarat = Math.min(totalJuzSelesai, totalJuzSelesai >= 10 ? 10 : 5);
-    return { kategori: '10juz', syaratJuz: Math.max(1, syarat), batasHari: 15 };
+    return { kategori: '10juz', syaratJuz: 10, batasHari: 14 };
   }
   return { kategori: '1juz', syaratJuz: 1, batasHari: 7 };
 }
