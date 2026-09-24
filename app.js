@@ -348,7 +348,7 @@ function terapkanCadangan(cadangan){
 }
 
 /* ====== 3. STATE APLIKASI (diisi dari Supabase setelah login) ====== */
-let DB = { kegiatan: [], santri: [], absensi: [], hafalan: [], murojaah: [], idad: [], tesKenaikanJuz: [] };
+let DB = { kegiatan: [], santri: [], kegiatanSemua: [], santriSemua: [], absensi: [], hafalan: [], murojaah: [], idad: [], tesKenaikanJuz: [] };
 /* syncMeta.{namaTabel} = timestamp `updated_at` PALING BARU yang sudah
    pernah diterima untuk tabel itu -- dipakai sebagai titik mulai delta
    sync berikutnya (WHERE updated_at > syncMeta.<tabel>). Kosong/null
@@ -363,7 +363,7 @@ let SESSION = null; // { userId, role, program, nama }
 /* PENTING -- PENYEBAB BUG "beberapa santri tidak bisa diabsen H" (scan
    maupun manual):
    Aplikasi ini punya BEBERAPA sumber yang bisa memanggil loadAll() secara
-   independen dan hampir bersamaan: auto-refresh tiap 20 detik
+   independen dan hampir bersamaan: auto-refresh tiap 2 menit
    (startAutoRefresh), tombol Refresh manual, DAN dulu setAbsensi()/
    tandaiSisanyaAlpha() juga ikut memanggil loadAll() setelah menyimpan.
    Semua panggilan itu sama-sama melakukan `DB = {...}` yaitu MENIMPA
@@ -405,9 +405,9 @@ let dbRevision = 0;
    banyak kegiatan x banyak hari). Karena query di bawah tidak punya
    ORDER BY, Postgres TIDAK menjamin baris mana yang ikut ke-return kalau
    jumlahnya melebihi batas itu -- bisa beda-beda tiap kali fetch,
-   termasuk saat auto-refresh yang jalan otomatis tiap 20 detik
+   termasuk saat auto-refresh yang jalan otomatis tiap 2 menit
    (startAutoRefresh). Kalau pembina sedang sibuk mengabsen banyak
-   santri (jadi makan waktu lebih dari 20 detik) dan kebetulan auto-
+   santri (jadi makan waktu lebih dari 2 menit) dan kebetulan auto-
    refresh lewat di tengah-tengah, absen yang BARU SAJA tersimpan hari
    itu bisa saja jadi baris yang "kepotong" dari hasil fetch -- DB lokal
    pun tertimpa data yang sudah tidak lengkap, sehingga waktu pindah
@@ -492,13 +492,23 @@ function gabungBarisDelta(existing, incoming, keyFn){
 }
 
 /* ====== Definisi tabel yang dipakai DELTA SYNC (absensi/hafalan/
-   murojaah/idad/tes_kenaikan_juz) -- semuanya punya kolom `updated_at`
-   + trigger yang otomatis mengisinya (lihat migrasi database), jadi
-   bisa difilter "WHERE updated_at > sync terakhir". Tabel kegiatan &
-   santri_umum SENGAJA tidak dimasukkan sini: keduanya kecil (belasan
-   & puluhan baris saja) jadi diambil PENUH terus tiap loadAll() --
-   egress-nya kecil, dan `santri_umum` (VIEW) juga tidak mengekspos
-   updated_at sehingga tidak bisa didelta.
+   murojaah/idad/tes_kenaikan_juz/kegiatan/santri) -- semuanya punya kolom
+   `updated_at` + trigger yang otomatis mengisinya (lihat migrasi database),
+   jadi bisa difilter "WHERE updated_at > sync terakhir".
+   PERUBAHAN (optimasi egress): `kegiatan` & `santri` (sebelumnya
+   `santri_umum`) SEMPAT sengaja dikecualikan dari delta sync karena
+   dulu dikira tidak bisa (santri_umum itu VIEW, tidak expose updated_at).
+   Ternyata `kegiatan` sendiri di tabel aslinya SUDAH punya updated_at, dan
+   `santri_umum` cuma VIEW dari tabel `santri` (filter WHERE NOT
+   sembunyikan_dari_pembina) -- tabel `santri` aslinya juga sudah punya
+   updated_at. Jadi keduanya sekarang didelta juga, TANPA filter aktif/
+   sembunyikan_dari_pembina di query (supaya baris yang BERUBAH status ikut
+   kedeteksi) -- hasil mentahnya disimpan di DB.kegiatanSemua/DB.santriSemua,
+   lalu DB.kegiatan/DB.santri (yang dipakai UI) diturunkan dari situ tiap
+   selesai loadAll() dengan menyaring aktif (& khusus santri, menyaring
+   sembunyikan_dari_pembina juga -- meniru persis filter view santri_umum
+   yang lama, PENTING supaya santri yang memang sengaja disembunyikan dari
+   Pembina tetap tidak kelihatan meski tabelnya sekarang dibaca langsung).
    - key: nama properti di objek DB (DB.absensi, DB.hafalan, dst).
    - table/cols: nama tabel & kolom yang diambil dari Supabase.
    - map: ubah 1 baris mentah dari Supabase ke bentuk yang dipakai UI
@@ -514,6 +524,16 @@ function gabungBarisDelta(existing, incoming, keyFn){
      fetchAllRowsSafe). false berarti boleh gagal sendirian (mis. tabel
      belum ada di instalasi lama) tanpa menggagalkan tabel lain. */
 const DELTA_TABLES = [
+  { key: 'kegiatanSemua', table: 'kegiatan', wajib: true,
+    cols: 'id,nama,program_khusus,aktif,updated_at',
+    map: k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null, aktif: k.aktif }),
+    keyFn: k => k.id },
+  { key: 'santriSemua', table: 'santri', wajib: true,
+    cols: 'id,nama,no_induk,program,hafalan_awal,jenis_kelamin,aktif,sembunyikan_dari_pembina,updated_at',
+    map: s => ({ id: s.id, nama: s.nama, no_induk: s.no_induk, program: s.program,
+      hafalan_awal: s.hafalan_awal, jenis_kelamin: s.jenis_kelamin,
+      aktif: s.aktif, sembunyikanDariPembina: !!s.sembunyikan_dari_pembina }),
+    keyFn: s => s.id },
   { key: 'absensi', table: 'absensi', wajib: true,
     cols: 'id,santri_id,kegiatan_id,tanggal,status,updated_at',
     map: a => ({ id: a.id, santriId: String(a.santri_id), kegiatanId: String(a.kegiatan_id), tanggal: a.tanggal, status: STATUS_FROM_DB[a.status] || 'a' }),
@@ -603,9 +623,9 @@ async function loadAll(opts) {
        renderAbsensiPage/renderHafalanPage bisa gagal walau nilainya
        sama (mis. 5 !== "5") begitu pembina pindah kegiatan lalu balik
        lagi -- efeknya status Hadir/Izin/dst yang SUDAH tersimpan jadi
-       terlihat kosong lagi padahal datanya ada di database. */
-    const kegiatanP = fetchAllRows(()=> sb.from('kegiatan').select('id,nama,program_khusus').eq('aktif', true).order('nama'));
-    const santriP = fetchAllRows(()=> sb.from('santri_umum').select('id,nama,no_induk,program,hafalan_awal,jenis_kelamin').eq('aktif', true).order('nama'));
+       terlihat kosong lagi padahal datanya ada di database. (kegiatan
+       & santri sekarang ikut lewat DELTA_TABLES di bawah -- map masing-
+       masing spec sudah menjaga id kegiatan jadi String.) */
 
     /* Tiap tabel delta disync PARALEL (Promise.all), sama seperti dulu.
        Tabel yang tidak wajib (murojaah/idad/tes_kenaikan_juz) dibungkus
@@ -637,7 +657,7 @@ async function loadAll(opts) {
       });
     });
 
-    const [kegiatanData, santriData, ...deltaHasil] = await Promise.all([kegiatanP, santriP, ...deltaPromises]);
+    const deltaHasil = await Promise.all(deltaPromises);
 
     /* Kalau ada perubahan lokal (tap tombol H, scan, dst) yang terjadi
        SELAMA fetch di atas berjalan, dbRevision sudah berubah -- untuk
@@ -645,9 +665,6 @@ async function loadAll(opts) {
        karena tidak ada yang menulis ke DB.kegiatan/DB.santri secara
        lokal. Baris di bawah tetap dipertahankan sebagai jaga-jaga saja. */
     if(dbRevision !== revisionAtStart) return;
-
-    DB.kegiatan = kegiatanData.map(k => ({ id: String(k.id), nama: k.nama, programKhusus: k.program_khusus || null }));
-    DB.santri = santriData.map(santriRowToApp);
 
     let semuaPenuhBerhasil = true;
     for(const hasil of deltaHasil){
@@ -675,6 +692,18 @@ async function loadAll(opts) {
         syncMeta[spec.key] = new Date().toISOString();
       }
     }
+
+    /* Turunkan DB.kegiatan & DB.santri (yang dipakai UI) dari hasil delta
+       sync mentah di atas, meniru persis filter yang dulu dilakukan di
+       query (eq('aktif', true)) / di view santri_umum (WHERE NOT
+       sembunyikan_dari_pembina). Dilakukan di sini (bukan di query) supaya
+       santri/kegiatan yang BERUBAH status ikut kedeteksi delta sync-nya,
+       lalu baru disaring saat dipakai. */
+    DB.kegiatan = (DB.kegiatanSemua || []).filter(k => k.aktif).sort((a,b)=>a.nama.localeCompare(b.nama));
+    DB.santri = (DB.santriSemua || [])
+      .filter(s => s.aktif && !s.sembunyikanDariPembina)
+      .map(santriRowToApp)
+      .sort((a,b)=>a.nama.localeCompare(b.nama));
     if(paksaPenuh && semuaPenuhBerhasil) syncMeta.fullSyncDate = todayStr();
 
     dbRevision++;
@@ -820,7 +849,7 @@ function enterApp(){
    TIDAK akan melihat perubahan itu sampai dia menekan Refresh manual --
    inilah yang bikin data "kelihatan hilang/kosong" padahal sebenarnya
    sudah tersimpan di database. Auto-refresh ini mengambil data terbaru
-   tiap 20 detik (kalau tab sedang aktif & tidak ada modal input yang
+   tiap 2 menit (kalau tab sedang aktif & tidak ada modal input yang
    sedang terbuka, supaya tidak mengganggu pembina yang lagi mengetik). */
 let autoRefreshTimer = null;
 function startAutoRefresh(){
@@ -1303,7 +1332,7 @@ async function markHadirViaScan(s, kegiatanId, tanggal){
     if(error) throw error;
     DB.absensi = DB.absensi.filter(a => !(a.santriId===s.id && a.kegiatanId===kegiatanId && a.tanggal===tanggal));
     DB.absensi.push({ santriId: s.id, kegiatanId, tanggal, status: 'h' });
-    /* dbRevision++ di sini juga -- supaya loadAll() (auto-refresh 20 detik
+    /* dbRevision++ di sini juga -- supaya loadAll() (auto-refresh 2 menit
        dsb) yang kebetulan sedang berjalan bersamaan saat pembina scan
        tahu datanya sudah ketinggalan begitu scan ini selesai, dan tidak
        menimpa balik status Hadir yang baru saja tercatat. Lihat catatan
