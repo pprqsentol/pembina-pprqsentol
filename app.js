@@ -104,7 +104,13 @@ function totalHafalanSantri(santriId){
 }
 
 /* ====== TARGET RAPOR (dipakai untuk penilaian singkat di Riwayat) ====== */
-const TARGET_HAFALAN_PER_HARI = 1;
+const TARGET_HAFALAN_PER_BULAN = 20; // halaman
+// Target periode: 20 halaman per bulan. Periode 28-31 hari dianggap 1 bulan penuh (=20 halaman),
+// di luar itu dihitung proporsional (20 halaman per 30 hari), minimal 1 halaman.
+function targetHafalanPeriode(hari){
+  const bulan = (hari >= 28 && hari <= 31) ? 1 : hari/30;
+  return Math.max(1, Math.round(bulan * TARGET_HAFALAN_PER_BULAN));
+}
 function hariDalamPeriode(from, to){
   const a = new Date(from), b = new Date(to);
   return Math.max(1, Math.round((b-a)/86400000) + 1);
@@ -118,7 +124,7 @@ function predikatLabel(huruf){
 function nilaiHafalanSantri(santriId, from, to){
   const tambahan = tambahanPeriode(santriId, from, to);
   const hari = hariDalamPeriode(from, to);
-  const target = hari * TARGET_HAFALAN_PER_HARI;
+  const target = targetHafalanPeriode(hari);
   const pct = target>0 ? Math.min(100, Math.round(tambahan/target*100)) : 0;
   return { tambahan, target, hari, pct, predikat: predikatFromPct(pct) };
 }
