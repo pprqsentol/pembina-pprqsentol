@@ -70,13 +70,36 @@ function isSantriPerempuan(s){
   return jk === 'p' || jk.startsWith('perempuan');
 }
 
-/* Total hafalan berjalan = hafalan awal (sebelum pakai aplikasi) + seluruh hafalan yang diinput lewat aplikasi.
-   1 juz = 20 halaman (hitungan internal pondok). */
-function totalHafalanSantri(santriId){
+/* Total hafalan berjalan = POSISI terjauh yang sudah dicapai santri, dalam halaman kumulatif
+   mengikuti urutan juz pondok (29, 30, 1, 2, ... 28), 1 juz = 20 halaman. Contoh: Juz 29 hal. 17 = 17.
+   BUKAN menjumlahkan halaman dari setiap baris setoran: baris "Ulang", setoran ganda, dan
+   setoran lanjutan di halaman yang sama (Setoran 1 + Bin Nadhor) akan terhitung berkali-kali.
+   hafalan_awal dipakai sebagai batas bawah (halaman yang sudah dihafal sebelum pakai aplikasi). */
+function posisiHalaman(h){
+  const p = posisiJuz(h.juz);
+  return p < 1 ? 0 : (p-1)*20 + (h.halamanSampai||0);
+}
+function hafalanAwalSantri(santriId){
   const s = DB.santri.find(x=>x.id===santriId);
-  const awal = s ? (s.hafalanAwal||0) : 0;
-  const tambahan = DB.hafalan.filter(h=>h.santriId===santriId).reduce((sum,h)=>sum+(h.jumlahHalaman||1),0);
-  const total = awal + tambahan;
+  return s ? (s.hafalanAwal||0) : 0;
+}
+// Posisi santri TEPAT SEBELUM tanggal `dari` (titik nol untuk hitungan "tambahan di periode").
+function posisiSebelum(santriId, dari){
+  let maks = hafalanAwalSantri(santriId);
+  DB.hafalan.forEach(h=>{ if(h.santriId===santriId && h.tanggal<dari) maks = Math.max(maks, posisiHalaman(h)); });
+  return maks;
+}
+// Halaman yang BENAR-BENAR bertambah di periode: posisi akhir periode - posisi sebelum periode.
+function tambahanPeriode(santriId, from, to){
+  let akhir = 0, ada = false;
+  DB.hafalan.forEach(h=>{
+    if(h.santriId===santriId && h.tanggal>=from && h.tanggal<=to){ ada = true; akhir = Math.max(akhir, posisiHalaman(h)); }
+  });
+  return ada ? Math.max(0, akhir - posisiSebelum(santriId, from)) : 0;
+}
+function totalHafalanSantri(santriId){
+  let total = hafalanAwalSantri(santriId);
+  DB.hafalan.forEach(h=>{ if(h.santriId===santriId) total = Math.max(total, posisiHalaman(h)); });
   return { total, juz: Math.floor(total/20), halaman: total%20 };
 }
 
@@ -93,8 +116,7 @@ function predikatLabel(huruf){
   return {A:'Sangat Baik', B:'Baik', C:'Cukup Baik', D:'Kurang Baik', E:'Kurang'}[huruf] || '-';
 }
 function nilaiHafalanSantri(santriId, from, to){
-  const tambahan = DB.hafalan.filter(h=>h.santriId===santriId && h.tanggal>=from && h.tanggal<=to)
-    .reduce((sum,h)=>sum+(h.jumlahHalaman||1),0);
+  const tambahan = tambahanPeriode(santriId, from, to);
   const hari = hariDalamPeriode(from, to);
   const target = hari * TARGET_HAFALAN_PER_HARI;
   const pct = target>0 ? Math.min(100, Math.round(tambahan/target*100)) : 0;
@@ -2041,7 +2063,7 @@ function renderRiwayatBody(){
   const absensi = DB.absensi.filter(a=>a.santriId===santriId && a.tanggal>=from && a.tanggal<=to).sort((a,b)=>b.tanggal.localeCompare(a.tanggal));
   const statusLabel = {h:'Hadir', a:'Alpha', i:'Izin', s:'Sakit', hd:'Haid'};
   const namaKegiatan = kid => (DB.kegiatan.find(k=>k.id===kid)||{}).nama || '-';
-  const totalPeriode = hafalan.reduce((sum,h)=>sum+(h.jumlahHalaman||1),0);
+  const totalPeriode = tambahanPeriode(santriId, from, to);
   const na = nilaiAbsensiSantri(santriId, from, to);
 
   let blokHafalan;
@@ -2132,10 +2154,10 @@ function renderRiwayatBody(){
       ${absensi.map(a=>`<tr><td>${a.tanggal}</td><td>${namaKegiatan(a.kegiatanId)}</td><td>${statusLabel[a.status]||a.status}</td></tr>`).join('')}
       </table>`}
   `;
-  drawSantriHafalanChart(hafalan);
+  drawSantriHafalanChart(hafalan, posisiSebelum(santriId, from));
   drawSantriAbsensiChart(santriId, from, to);
 }
-function drawSantriHafalanChart(hafalanItems){
+function drawSantriHafalanChart(hafalanItems, posisiAwalPeriode){
   const canvas = document.getElementById('chartSantriHafalan');
   if(!canvas) return;
   const ctx = canvas.getContext('2d');
@@ -2143,8 +2165,10 @@ function drawSantriHafalanChart(hafalanItems){
   ctx.clearRect(0,0,W,H);
   const items = hafalanItems.slice().sort((a,b)=>a.tanggal.localeCompare(b.tanggal));
   if(items.length<2){ ctx.fillStyle='#888'; ctx.font='12px sans-serif'; ctx.fillText('Belum cukup data untuk grafik.', 10, H/2); return; }
-  let cum = 0;
-  const series = items.map(h=>{ cum += (h.jumlahHalaman||1); return { t:h.tanggal, v:cum }; });
+  // Kumulatif = posisi terjauh sampai tanggal itu dikurangi posisi sebelum periode (tidak naik
+  // kalau santri cuma mengulang halaman yang sama).
+  let maks = posisiAwalPeriode||0;
+  const series = items.map(h=>{ maks = Math.max(maks, posisiHalaman(h)); return { t:h.tanggal, v:maks-(posisiAwalPeriode||0) }; });
   const maxV = Math.max(1, ...series.map(p=>p.v));
   ctx.strokeStyle='#ddd'; ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(W-10,H-pad); ctx.stroke();
   ctx.strokeStyle='#3b5940'; ctx.lineWidth=2; ctx.beginPath();
