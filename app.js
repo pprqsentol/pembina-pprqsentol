@@ -70,36 +70,50 @@ function isSantriPerempuan(s){
   return jk === 'p' || jk.startsWith('perempuan');
 }
 
-/* Total hafalan berjalan = POSISI terjauh yang sudah dicapai santri, dalam halaman kumulatif
-   mengikuti urutan juz pondok (29, 30, 1, 2, ... 28), 1 juz = 20 halaman. Contoh: Juz 29 hal. 17 = 17.
-   BUKAN menjumlahkan halaman dari setiap baris setoran: baris "Ulang", setoran ganda, dan
-   setoran lanjutan di halaman yang sama (Setoran 1 + Bin Nadhor) akan terhitung berkali-kali.
-   hafalan_awal dipakai sebagai batas bawah (halaman yang sudah dihafal sebelum pakai aplikasi). */
-function posisiHalaman(h){
+/* Total hafalan berjalan = hafalan awal + halaman UNIK yang sudah disetor lewat kegiatan "Setoran 1"
+   berstatus Lancar (urutan halaman mengikuti urutan juz pondok: 29, 30, 1, ... 28; 1 juz = 20 halaman).
+   "Setoran Bin Nadhor", setoran berstatus Ulang, dan Murojaah TIDAK dihitung. Halaman yang sama yang
+   disetor berkali-kali hanya dihitung sekali. Hasil "juz" = JUMLAH juz yang sudah dihafal, BUKAN nomor
+   juz yang sedang dihafal. hafalan_awal = halaman yang sudah dihafal sebelum pakai aplikasi. */
+function setoran1Lancar(h){
+  const daftar = (DB.kegiatanSemua && DB.kegiatanSemua.length) ? DB.kegiatanSemua : DB.kegiatan;
+  const nama = String(((daftar||[]).find(k=>k.id===h.kegiatanId)||{}).nama || '').trim().toLowerCase();
+  return nama === 'setoran 1' && h.keterangan !== 'Ulang';
+}
+// Nomor halaman kumulatif (urutan pondok) dari satu baris setoran, contoh Juz 29 hal. 1-8 -> [1..8]
+function halamanMutlak(h){
   const p = posisiJuz(h.juz);
-  return p < 1 ? 0 : (p-1)*20 + (h.halamanSampai||0);
+  if(p < 1) return [];
+  const dari = h.halamanDari || h.halamanSampai || 0, sampai = h.halamanSampai || dari;
+  const hasil = [];
+  for(let x = dari; x <= sampai && x <= 20; x++) if(x >= 1) hasil.push((p-1)*20 + x);
+  return hasil;
 }
 function hafalanAwalSantri(santriId){
   const s = DB.santri.find(x=>x.id===santriId);
   return s ? (s.hafalanAwal||0) : 0;
 }
-// Posisi santri TEPAT SEBELUM tanggal `dari` (titik nol untuk hitungan "tambahan di periode").
-function posisiSebelum(santriId, dari){
-  let maks = hafalanAwalSantri(santriId);
-  DB.hafalan.forEach(h=>{ if(h.santriId===santriId && h.tanggal<dari) maks = Math.max(maks, posisiHalaman(h)); });
-  return maks;
-}
-// Halaman yang BENAR-BENAR bertambah di periode: posisi akhir periode - posisi sebelum periode.
-function tambahanPeriode(santriId, from, to){
-  let akhir = 0, ada = false;
+// Kumpulan halaman unik dari Setoran 1 Lancar milik santri pada tanggal yang lolos `pilihTanggal`.
+function kumpulHalaman(santriId, pilihTanggal){
+  const set = new Set();
   DB.hafalan.forEach(h=>{
-    if(h.santriId===santriId && h.tanggal>=from && h.tanggal<=to){ ada = true; akhir = Math.max(akhir, posisiHalaman(h)); }
+    if(h.santriId===santriId && setoran1Lancar(h) && pilihTanggal(h.tanggal)) halamanMutlak(h).forEach(x=>set.add(x));
   });
-  return ada ? Math.max(0, akhir - posisiSebelum(santriId, from)) : 0;
+  return set;
+}
+// Halaman yang BENAR-BENAR baru di periode: belum pernah disetor Setoran 1 Lancar sebelum periode dan di atas hafalan_awal.
+function tambahanPeriode(santriId, from, to){
+  const awal = hafalanAwalSantri(santriId);
+  const sebelum = kumpulHalaman(santriId, t=>t<from);
+  let n = 0;
+  kumpulHalaman(santriId, t=>t>=from && t<=to).forEach(x=>{ if(x>awal && !sebelum.has(x)) n++; });
+  return n;
 }
 function totalHafalanSantri(santriId){
-  let total = hafalanAwalSantri(santriId);
-  DB.hafalan.forEach(h=>{ if(h.santriId===santriId) total = Math.max(total, posisiHalaman(h)); });
+  const awal = hafalanAwalSantri(santriId);
+  let n = 0;
+  kumpulHalaman(santriId, ()=>true).forEach(x=>{ if(x>awal) n++; });
+  const total = awal + n;
   return { total, juz: Math.floor(total/20), halaman: total%20 };
 }
 
@@ -2160,21 +2174,26 @@ function renderRiwayatBody(){
       ${absensi.map(a=>`<tr><td>${a.tanggal}</td><td>${namaKegiatan(a.kegiatanId)}</td><td>${statusLabel[a.status]||a.status}</td></tr>`).join('')}
       </table>`}
   `;
-  drawSantriHafalanChart(hafalan, posisiSebelum(santriId, from));
+  drawSantriHafalanChart(hafalan, santriId, from);
   drawSantriAbsensiChart(santriId, from, to);
 }
-function drawSantriHafalanChart(hafalanItems, posisiAwalPeriode){
+function drawSantriHafalanChart(hafalanItems, santriId, from){
   const canvas = document.getElementById('chartSantriHafalan');
   if(!canvas) return;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height, pad = 30;
   ctx.clearRect(0,0,W,H);
-  const items = hafalanItems.slice().sort((a,b)=>a.tanggal.localeCompare(b.tanggal));
+  const items = hafalanItems.filter(setoran1Lancar).sort((a,b)=>a.tanggal.localeCompare(b.tanggal));
   if(items.length<2){ ctx.fillStyle='#888'; ctx.font='12px sans-serif'; ctx.fillText('Belum cukup data untuk grafik.', 10, H/2); return; }
-  // Kumulatif = posisi terjauh sampai tanggal itu dikurangi posisi sebelum periode (tidak naik
-  // kalau santri cuma mengulang halaman yang sama).
-  let maks = posisiAwalPeriode||0;
-  const series = items.map(h=>{ maks = Math.max(maks, posisiHalaman(h)); return { t:h.tanggal, v:maks-(posisiAwalPeriode||0) }; });
+  // Kumulatif = halaman baru (unik) dari Setoran 1 Lancar sejak awal periode; tidak naik kalau
+  // halaman yang sama disetor lagi.
+  const awal = hafalanAwalSantri(santriId);
+  const terlihat = kumpulHalaman(santriId, t=>t<from);
+  let cum = 0;
+  const series = items.map(h=>{
+    halamanMutlak(h).forEach(x=>{ if(x>awal && !terlihat.has(x)){ terlihat.add(x); cum++; } });
+    return { t:h.tanggal, v:cum };
+  });
   const maxV = Math.max(1, ...series.map(p=>p.v));
   ctx.strokeStyle='#ddd'; ctx.beginPath(); ctx.moveTo(pad,H-pad); ctx.lineTo(W-10,H-pad); ctx.stroke();
   ctx.strokeStyle='#3b5940'; ctx.lineWidth=2; ctx.beginPath();
