@@ -650,6 +650,38 @@ async function hitungBarisServer(table){
   }
 }
 
+/* ---- HEMAT REQUEST: delta 5 tabel lewat SATU panggilan RPC ----
+   Sebelumnya tiap putaran delta (tiap 2 menit saat layar aktif) memanggil 7 GET terpisah. Fungsi database
+   `delta_sync_pembina` (SECURITY INVOKER, jadi aturan RLS tetap berlaku) mengembalikan perubahan 5 tabel
+   (absensi, hafalan, murojaah, idad, tes_kenaikan_juz) sekaligus -- dengan kolom & urutan yang sama persis
+   seperti query lama. `kegiatan` & `santri` tetap GET sendiri.
+   Dipakai HANYA untuk delta rutin (semua 5 kursor sudah ada). Sinkron penuh (harian, tombol Refresh, atau
+   tabel yang belum punya kursor) tetap lewat jalur lama yang dipaginasi. Kalau RPC gagal/bentuk hasilnya
+   tidak sesuai, otomatis kembali ke jalur lama per tabel -- perilakunya sama seperti sebelum perubahan ini.
+   Ubah PAKAI_RPC_DELTA jadi false untuk mematikan seluruh jalur RPC tanpa mengubah hal lain. */
+const PAKAI_RPC_DELTA = true;
+const RPC_DELTA_TABEL = ['absensi', 'hafalan', 'murojaah', 'idad', 'tes_kenaikan_juz'];
+async function tarikDeltaViaRpc(){
+  if(!PAKAI_RPC_DELTA) return null;
+  try{
+    const params = {};
+    for(const spec of DELTA_TABLES){
+      if(!RPC_DELTA_TABEL.includes(spec.table)) continue;
+      const kursor = syncMeta[spec.key];
+      if(!kursor) return null; // ada tabel yang belum pernah disync: jalur lama (dipaginasi)
+      params['p_cursor_' + spec.table] = kursor;
+    }
+    const { data, error } = await sb.rpc('delta_sync_pembina', params);
+    if(error) throw error;
+    if(!data || typeof data !== 'object') return null;
+    for(const t of RPC_DELTA_TABEL){ if(!Array.isArray(data[t])) return null; }
+    return data;
+  }catch(e){
+    console.warn('RPC delta_sync_pembina gagal, pakai jalur GET per tabel:', e);
+    return null;
+  }
+}
+
 /* loadAll(opts): opts.forceFull=true memaksa AMBIL PENUH semua tabel
    delta sekali ini saja (dipakai tombol Refresh manual -- lihat
    refreshApp()), supaya pembina selalu punya cara menyamakan data 100%
@@ -693,6 +725,7 @@ async function loadAll(opts) {
        Tabel yang tidak wajib (murojaah/idad/tes_kenaikan_juz) dibungkus
        supaya gagal sendiri-sendiri tidak menggagalkan Promise.all --
        gantinya fetchAllRowsSafe dulu. */
+    const rpcDeltaPromise = paksaPenuh ? Promise.resolve(null) : tarikDeltaViaRpc();
     const deltaPromises = DELTA_TABLES.map(spec => {
       if(paksaPenuh){
         const p = (async () => {
@@ -711,7 +744,10 @@ async function loadAll(opts) {
         });
       }
       const sejak = syncMeta[spec.key] || null;
-      const p = fetchRowsSince(()=> sb.from(spec.table).select(spec.cols), sejak)
+      const jalurLama = ()=> fetchRowsSince(()=> sb.from(spec.table).select(spec.cols), sejak);
+      const p = (RPC_DELTA_TABEL.includes(spec.table)
+          ? rpcDeltaPromise.then(hasil => (hasil && Array.isArray(hasil[spec.table])) ? hasil[spec.table] : jalurLama())
+          : jalurLama())
         .then(rows => ({ spec, sejak, rows, gagal: false }));
       return spec.wajib ? p : p.catch(e => {
         console.warn('Sinkron tabel '+spec.table+' gagal, pakai data lokal yang ada:', e);
