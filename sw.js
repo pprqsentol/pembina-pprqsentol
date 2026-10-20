@@ -1,4 +1,4 @@
-const CACHE = 'pembina-rq-v12-delta-rpc';
+const CACHE = 'pembina-rq-v13-realtime';
 const FILES = [
   './',
   './index.html',

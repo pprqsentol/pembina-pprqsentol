@@ -24,7 +24,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 sb.auth.onAuthStateChange((event) => {
   if(event === 'SIGNED_OUT' && SESSION){
     SESSION = null;
-    if(autoRefreshTimer){ clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+    hentikanAutoRefresh();
     document.getElementById('app').style.display = 'none';
     const loginScreen = document.getElementById('loginScreen');
     loginScreen.style.display = 'flex';
@@ -908,6 +908,7 @@ async function doLogin() {
 async function logout() {
   await sb.auth.signOut();
   SESSION = null;
+  hentikanAutoRefresh();
   document.getElementById('app').style.display='none';
   document.getElementById('loginScreen').style.display='flex';
 }
@@ -949,23 +950,119 @@ function enterApp(){
    sudah tersimpan di database. Auto-refresh ini mengambil data terbaru
    tiap 2 menit (kalau tab sedang aktif & tidak ada modal input yang
    sedang terbuka, supaya tidak mengganggu pembina yang lagi mengetik). */
+/* ---- HEMAT REQUEST: Realtime sebagai pemicu utama, timer hanya jaring pengaman ----
+   Sebelumnya aplikasi bertanya ke server tiap 2 menit (sekitar 150 kali sehari) walau hampir selalu
+   jawabannya "tidak ada perubahan" -- tiap pertanyaan tetap tercatat di log Supabase. Sekarang aplikasi
+   mendengarkan kabar perubahan dari server (Realtime, tabel-tabel di REALTIME_TABEL sudah didaftarkan di
+   database) dan baru menarik delta saat ada kabar. Timer turun jadi tiap 10 menit sebagai jaring pengaman.
+   Kalau Realtime tidak tersambung (jaringan putus/error), timer OTOMATIS kembali ke 2 menit seperti dulu,
+   dan begitu tersambung lagi aplikasi menarik delta sekali untuk mengejar kabar yang sempat terlewat.
+   Ubah PAKAI_REALTIME jadi false untuk mematikan semuanya (kembali persis ke cara lama: tiap 2 menit). */
+const PAKAI_REALTIME = true;
+const AUTO_REFRESH_POLLING_MS = 120000;   // cara lama / saat Realtime tidak tersambung
+const AUTO_REFRESH_PENGAMAN_MS = 600000;  // saat Realtime tersambung: hanya jaring pengaman
+const REALTIME_DEBOUNCE_MS = 2000;        // gabungkan rentetan kabar jadi satu sinkron
+const KEMBALI_TERLIHAT_MIN_MS = 120000;   // tersembunyi >= 2 menit lalu kembali: tarik delta sekali
+const REALTIME_TABEL = ['absensi', 'hafalan', 'murojaah', 'idad', 'tes_kenaikan_juz', 'kegiatan', 'santri'];
+
 let autoRefreshTimer = null;
+let autoRefreshMs = 0;
+let realtimeChannel = null;
+let realtimeTersambung = false;
+let realtimePernahTersambung = false;
+let realtimeDebounceTimer = null;
+let sinkronBerjalan = false;
+let sinkronUlang = false;      // ada pemicu baru saat sinkron sedang jalan: ulangi sekali setelah selesai
+let sinkronTertunda = false;   // pemicu tertahan (tab tersembunyi / modal input terbuka): jalankan nanti
+let sinkronTertundaTimer = null;
+let waktuTersembunyi = 0;
+
+function aturIntervalAutoRefresh(){
+  const ms = (PAKAI_REALTIME && realtimeTersambung) ? AUTO_REFRESH_PENGAMAN_MS : AUTO_REFRESH_POLLING_MS;
+  if(autoRefreshTimer && autoRefreshMs === ms) return;
+  if(autoRefreshTimer){ clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if(!SESSION) return;
+  autoRefreshMs = ms;
+  autoRefreshTimer = setInterval(()=> sinkronOtomatis('timer'), ms);
+}
+
+async function sinkronOtomatis(sumber){
+  if(!SESSION) return;
+  if(document.hidden){ // tab/app sedang tidak dilihat: jangan tarik data, tapi ingat kalau ada kabar baru
+    if(sumber !== 'timer') sinkronTertunda = true;
+    return;
+  }
+  const modalRoot = document.getElementById('modalRoot');
+  if(modalRoot && modalRoot.innerHTML.trim() !== ''){ // ada modal input terbuka, jangan ganggu
+    if(sumber !== 'timer'){ sinkronTertunda = true; jadwalkanCobaLagiTertunda(); }
+    return;
+  }
+  if(sinkronBerjalan){ sinkronUlang = true; return; }
+  sinkronBerjalan = true; sinkronTertunda = false;
+  try{
+    await loadAll();
+    renderOfflineBanner();
+    if(currentPage==='absensi') renderAbsensiPage();
+    else if(currentPage==='hafalan') renderHafalanPage();
+    else if(currentPage==='tesKenaikan') renderTesKenaikanPage();
+  }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi nanti):', e); }
+  finally{
+    sinkronBerjalan = false;
+    if(sinkronUlang){ sinkronUlang = false; sinkronOtomatis('ulang'); }
+  }
+}
+function jadwalkanCobaLagiTertunda(){
+  if(sinkronTertundaTimer) return;
+  sinkronTertundaTimer = setTimeout(()=>{ sinkronTertundaTimer = null; if(sinkronTertunda) sinkronOtomatis('tertunda'); }, 20000);
+}
+
+function tandaiPerubahanRealtime(){
+  if(realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
+  realtimeDebounceTimer = setTimeout(()=>{ realtimeDebounceTimer = null; sinkronOtomatis('realtime'); }, REALTIME_DEBOUNCE_MS);
+}
+function mulaiRealtime(){
+  if(!PAKAI_REALTIME || realtimeChannel || !SESSION) return;
+  try{
+    let ch = sb.channel('pembina-sync');
+    REALTIME_TABEL.forEach(t => { ch = ch.on('postgres_changes', { event:'*', schema:'public', table:t }, tandaiPerubahanRealtime); });
+    ch.subscribe((status)=>{
+      const tersambung = (status === 'SUBSCRIBED');
+      const barusajaPulih = tersambung && realtimePernahTersambung && !realtimeTersambung;
+      realtimeTersambung = tersambung;
+      if(tersambung) realtimePernahTersambung = true;
+      aturIntervalAutoRefresh();
+      if(barusajaPulih) sinkronOtomatis('pulih'); // kabar yang terlewat saat putus: kejar sekali
+    });
+    realtimeChannel = ch;
+  }catch(e){
+    console.warn('Realtime gagal dimulai, pakai timer 2 menit seperti biasa:', e);
+    realtimeChannel = null; realtimeTersambung = false;
+  }
+}
+function hentikanRealtime(){
+  if(realtimeDebounceTimer){ clearTimeout(realtimeDebounceTimer); realtimeDebounceTimer = null; }
+  if(sinkronTertundaTimer){ clearTimeout(sinkronTertundaTimer); sinkronTertundaTimer = null; }
+  if(realtimeChannel){ try{ sb.removeChannel(realtimeChannel); }catch(e){} }
+  realtimeChannel = null; realtimeTersambung = false; realtimePernahTersambung = false; sinkronTertunda = false;
+}
+function hentikanAutoRefresh(){
+  if(autoRefreshTimer){ clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  autoRefreshMs = 0;
+  hentikanRealtime();
+}
 function startAutoRefresh(){
   if(autoRefreshTimer) return;
-  autoRefreshTimer = setInterval(async ()=>{
-    if(!SESSION) return;
-    if(document.hidden) return; // tab/app sedang tidak aktif dilihat, hemat kuota
-    const modalRoot = document.getElementById('modalRoot');
-    if(modalRoot && modalRoot.innerHTML.trim() !== '') return; // ada modal input terbuka, jangan ganggu
-    try{
-      await loadAll();
-      renderOfflineBanner();
-      if(currentPage==='absensi') renderAbsensiPage();
-      else if(currentPage==='hafalan') renderHafalanPage();
-      else if(currentPage==='tesKenaikan') renderTesKenaikanPage();
-    }catch(e){ console.warn('Auto-refresh gagal (dilewati, coba lagi 2 menit lagi):', e); }
-  }, 120000);
+  aturIntervalAutoRefresh(); // mulai dengan 2 menit; berubah jadi 10 menit begitu Realtime tersambung
+  mulaiRealtime();
 }
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden){ waktuTersembunyi = Date.now(); return; }
+  if(!SESSION) return;
+  const lama = waktuTersembunyi ? (Date.now() - waktuTersembunyi) : 0;
+  // kembali terlihat: kalau ada kabar yang tertahan, atau sempat tersembunyi cukup lama (koneksi Realtime bisa
+  // terputus diam-diam di HP), tarik delta sekali supaya data tidak tertinggal sampai timer berikutnya
+  if(PAKAI_REALTIME && (sinkronTertunda || lama >= KEMBALI_TERLIHAT_MIN_MS)) sinkronOtomatis('terlihat');
+});
 
 /* ---------- NAV ---------- */
 const NAV_ACTIONS = [
