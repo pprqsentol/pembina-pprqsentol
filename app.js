@@ -585,6 +585,7 @@ function gabungBarisDelta(existing, incoming, keyFn){
      cadangan offline (sama seperti dulu absensi/hafalan TIDAK dibungkus
      fetchAllRowsSafe). false berarti boleh gagal sendirian (mis. tabel
      belum ada di instalasi lama) tanpa menggagalkan tabel lain. */
+const TABEL_JARANG_BERUBAH = ['kegiatanSemua', 'santriSemua'];
 const DELTA_TABLES = [
   { key: 'kegiatanSemua', table: 'kegiatan', wajib: true,
     cols: 'id,nama,program_khusus,aktif,updated_at',
@@ -744,6 +745,12 @@ async function loadAll(opts) {
         });
       }
       const sejak = syncMeta[spec.key] || null;
+      /* HEMAT LOG: santri & kegiatan hampir tidak pernah berubah (bisa setahun). Pada sinkron
+         rutin (bukan sinkron penuh harian/tombol Refresh) keduanya DILEWATI selama data lokalnya
+         sudah ada. Perubahan santri/kegiatan baru terbaca saat sinkron penuh harian atau Refresh. */
+      if(TABEL_JARANG_BERUBAH.includes(spec.key) && sejak && (DB[spec.key] || []).length){
+        return Promise.resolve({ spec, sejak, rows: [], gagal: false, dilewati: true });
+      }
       const jalurLama = ()=> fetchRowsSince(()=> sb.from(spec.table).select(spec.cols), sejak);
       const p = (RPC_DELTA_TABEL.includes(spec.table)
           ? rpcDeltaPromise.then(hasil => (hasil && Array.isArray(hasil[spec.table])) ? hasil[spec.table] : jalurLama())
@@ -961,9 +968,9 @@ function enterApp(){
 const PAKAI_REALTIME = true;
 const AUTO_REFRESH_POLLING_MS = 120000;   // cara lama / saat Realtime tidak tersambung
 const AUTO_REFRESH_PENGAMAN_MS = 600000;  // saat Realtime tersambung: hanya jaring pengaman
-const REALTIME_DEBOUNCE_MS = 2000;        // gabungkan rentetan kabar jadi satu sinkron
+const REALTIME_DEBOUNCE_MS = 10000;       // gabungkan rentetan kabar jadi satu sinkron (10 dtk: hemat log)
 const KEMBALI_TERLIHAT_MIN_MS = 120000;   // tersembunyi >= 2 menit lalu kembali: tarik delta sekali
-const REALTIME_TABEL = ['absensi', 'hafalan', 'murojaah', 'idad', 'tes_kenaikan_juz', 'kegiatan', 'santri'];
+const REALTIME_TABEL = ['absensi', 'hafalan', 'murojaah', 'idad', 'tes_kenaikan_juz']; // santri & kegiatan sengaja tidak dipantau (jarang berubah)
 
 let autoRefreshTimer = null;
 let autoRefreshMs = 0;
@@ -1016,7 +1023,24 @@ function jadwalkanCobaLagiTertunda(){
   sinkronTertundaTimer = setTimeout(()=>{ sinkronTertundaTimer = null; if(sinkronTertunda) sinkronOtomatis('tertunda'); }, 20000);
 }
 
-function tandaiPerubahanRealtime(){
+/* HEMAT LOG: kalau baris yang dikabarkan realtime ternyata SUDAH sama persis dengan yang ada di HP
+   (mis. kabar dari simpanan pembina sendiri), tidak perlu sinkron ke server. Perbandingan
+   mengabaikan `id` (baris yang baru disimpan lokal kadang belum punya id). Kabar HAPUS atau
+   kabar yang tidak lengkap selalu tetap memicu sinkron (jalur aman). */
+function kabarSudahSamaDiLokal(payload){
+  try{
+    if(!payload || payload.eventType === 'DELETE' || !payload.new) return false;
+    const spec = DELTA_TABLES.find(t => t.table === payload.table);
+    if(!spec) return false;
+    const baru = spec.map(payload.new);
+    const kunci = spec.keyFn(baru);
+    const lokal = (DB[spec.key] || []).find(r => spec.keyFn(r) === kunci);
+    if(!lokal) return false;
+    return Object.keys(baru).every(k => k === 'id' || JSON.stringify(baru[k]) === JSON.stringify(lokal[k]));
+  }catch(e){ return false; }
+}
+function tandaiPerubahanRealtime(payload){
+  if(kabarSudahSamaDiLokal(payload)) return;
   if(realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
   realtimeDebounceTimer = setTimeout(()=>{ realtimeDebounceTimer = null; sinkronOtomatis('realtime'); }, REALTIME_DEBOUNCE_MS);
 }
