@@ -966,9 +966,10 @@ function enterApp(){
    dan begitu tersambung lagi aplikasi menarik delta sekali untuk mengejar kabar yang sempat terlewat.
    Ubah PAKAI_REALTIME jadi false untuk mematikan semuanya (kembali persis ke cara lama: tiap 2 menit). */
 const PAKAI_REALTIME = true;
-const AUTO_REFRESH_POLLING_MS = 120000;   // cara lama / saat Realtime tidak tersambung
-const AUTO_REFRESH_PENGAMAN_MS = 600000;  // saat Realtime tersambung: hanya jaring pengaman
-const REALTIME_DEBOUNCE_MS = 10000;       // gabungkan rentetan kabar jadi satu sinkron (10 dtk: hemat log)
+const AUTO_REFRESH_POLLING_MS = 300000;   // cara lama / saat Realtime tidak tersambung (5 menit: hemat log)
+const AUTO_REFRESH_PENGAMAN_MS = 1800000; // saat Realtime tersambung: hanya jaring pengaman (30 menit: hemat log)
+const REALTIME_DEBOUNCE_MS = 10000;       // kabar pertama setelah sepi: sinkron setelah jeda ini (10 dtk: rentetan ketukan jadi satu sinkron)
+const REALTIME_JARAK_MIN_MS = 120000;     // sinkron karena kabar paling sering 1x per 2 menit (tulisan sendiri juga memantul sebagai kabar)
 const KEMBALI_TERLIHAT_MIN_MS = 120000;   // tersembunyi >= 2 menit lalu kembali: tarik delta sekali
 const REALTIME_TABEL = ['absensi', 'hafalan', 'murojaah', 'idad', 'tes_kenaikan_juz']; // santri & kegiatan sengaja tidak dipantau (jarang berubah)
 
@@ -978,6 +979,7 @@ let realtimeChannel = null;
 let realtimeTersambung = false;
 let realtimePernahTersambung = false;
 let realtimeDebounceTimer = null;
+let waktuSinkronTerakhir = 0;
 let sinkronBerjalan = false;
 let sinkronUlang = false;      // ada pemicu baru saat sinkron sedang jalan: ulangi sekali setelah selesai
 let sinkronTertunda = false;   // pemicu tertahan (tab tersembunyi / modal input terbuka): jalankan nanti
@@ -1005,7 +1007,7 @@ async function sinkronOtomatis(sumber){
     return;
   }
   if(sinkronBerjalan){ sinkronUlang = true; return; }
-  sinkronBerjalan = true; sinkronTertunda = false;
+  sinkronBerjalan = true; sinkronTertunda = false; waktuSinkronTerakhir = Date.now();
   try{
     await loadAll();
     renderOfflineBanner();
@@ -1041,8 +1043,12 @@ function kabarSudahSamaDiLokal(payload){
 }
 function tandaiPerubahanRealtime(payload){
   if(kabarSudahSamaDiLokal(payload)) return;
-  if(realtimeDebounceTimer) clearTimeout(realtimeDebounceTimer);
-  realtimeDebounceTimer = setTimeout(()=>{ realtimeDebounceTimer = null; sinkronOtomatis('realtime'); }, REALTIME_DEBOUNCE_MS);
+  /* Pembatas (throttle): kabar pertama setelah sepi memicu sinkron dalam ~2 detik. Kabar berikutnya yang datang
+     sebelum REALTIME_JARAK_MIN_MS sejak sinkron terakhir TIDAK memicu sinkron sendiri-sendiri, melainkan digabung jadi
+     satu sinkron susulan. */
+  if(realtimeDebounceTimer) return; // sudah ada sinkron terjadwal yang akan mengambil semua perubahan terbaru
+  const tunggu = Math.max(REALTIME_DEBOUNCE_MS, (waktuSinkronTerakhir + REALTIME_JARAK_MIN_MS) - Date.now());
+  realtimeDebounceTimer = setTimeout(()=>{ realtimeDebounceTimer = null; sinkronOtomatis('realtime'); }, tunggu);
 }
 function mulaiRealtime(){
   if(!PAKAI_REALTIME || realtimeChannel || !SESSION) return;
@@ -1192,6 +1198,45 @@ function toJakartaDateStr(date){
 function todayStr(){ return toJakartaDateStr(new Date()); }
 function val(id){ return document.getElementById(id).value; }
 
+/* ====== ATURAN HARI LIBUR KEGIATAN ======
+   - Sholat (semua)            : TIDAK pernah libur (absensi sholat jalan terus).
+   - Setoran 1, Murojaah 1/2/3 : libur pada hari JUMAT dan KAMIS KLIWON.
+   - Setoran Bin Nadhor        : libur pada KAMIS KLIWON (malam Jumat) saja. Jumat malam tetap ada.
+   - Kegiatan lain (I'dad, dll): tidak diatur libur.
+   Kamis Kliwon dihitung otomatis dari tanggal (siklus pasaran Jawa 5 hari, patokan 1 Jan 1970 = Wage). */
+function pasaranJawa(tgl){
+  const [y, m, d] = String(tgl||'').split('-').map(Number);
+  if(!y || !m || !d) return '';
+  const hari = Math.floor(Date.UTC(y, m-1, d) / 86400000);
+  return ['Legi','Pahing','Pon','Wage','Kliwon'][(((hari + 3) % 5) + 5) % 5];
+}
+function alasanLibur(namaKegiatan, tgl){
+  const nama = String(namaKegiatan||'').trim().toLowerCase();
+  const [y, m, d] = String(tgl||'').split('-').map(Number);
+  if(!nama || !y || !m || !d) return '';
+  if(nama.startsWith('sholat')) return '';
+  const hariKe = new Date(Date.UTC(y, m-1, d)).getUTCDay(); // 4 = Kamis, 5 = Jumat
+  const kamisKliwon = hariKe === 4 && pasaranJawa(tgl) === 'Kliwon';
+  const jumat = hariKe === 5;
+  if(nama === 'setoran 1' || nama.startsWith('murojaah')){
+    if(kamisKliwon) return 'Kamis Kliwon';
+    if(jumat) return 'hari Jumat';
+    return '';
+  }
+  if(nama === 'setoran bin nadhor' && kamisKliwon) return 'Kamis Kliwon (malam Jumat)';
+  return '';
+}
+function blokirJikaLibur(namaKegiatan, tgl){
+  const alasan = alasanLibur(namaKegiatan, tgl);
+  if(!alasan) return false;
+  alert('Kegiatan ' + namaKegiatan + ' libur pada ' + alasan + ' (' + tgl + '). Input tidak bisa dilakukan.');
+  return true;
+}
+function bannerLibur(namaKegiatan, tgl){
+  const alasan = alasanLibur(namaKegiatan, tgl);
+  return alasan ? `<p class="muted" style="margin:8px 0 0"><b>&#128683; Libur &mdash; ${escapeHtml(alasan)}.</b> Kegiatan ini tidak ada pada tanggal ini, input dikunci.</p>` : '';
+}
+
 /* Kegiatan yang boleh pakai status "Haid": semua kegiatan sholat (nama
    diawali "Sholat" -- Subuh/Dzuhur/Ashar/Maghrib/Isya) dan kegiatan
    "Setoran Bin Nadhor" (membaca mushaf, bukan dari hafalan). Kegiatan
@@ -1229,6 +1274,7 @@ function renderAbsensiPage(){
      (Sakit/Izin/Alpha/Haid). Untuk kegiatan lain (Sekolah, Sholat, dll)
      tetap seperti biasa: Hadir, Sakit, Izin, Alpha (+ Haid kalau berlaku). */
   const kegHafalanMurojaah = !!jenisKegiatanHafalan(kegAktif && kegAktif.nama);
+  const liburKet = alasanLibur(kegAktif && kegAktif.nama, absTanggal);
 
   /* status tiap santri untuk kegiatan+tanggal terpilih (kosong = belum diisi sama sekali) */
   const withStatus = semuaSantri.map(s=>{
@@ -1252,6 +1298,8 @@ function renderAbsensiPage(){
     tampil = tampil.filter(x => x.s.nama.toLowerCase().includes(q));
   }
 
+  if(liburKet) tampil = [];
+
   const filterTabs = [
     {key:'semua', label:'Semua', count: withStatus.length},
     {key:'kosong', label:'Belum Diisi', count: jumlah.kosong},
@@ -1267,16 +1315,16 @@ function renderAbsensiPage(){
     <div class="card">
       <label>Kegiatan</label>
       <select onchange="absKegiatanId=this.value; absFilter='semua'; absSearch=''; renderAbsensiPage()">
-        ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}</option>`).join('')}
+        ${DB.kegiatan.map(k=>`<option value="${k.id}" ${k.id===absKegiatanId?'selected':''}>${escapeHtml(k.nama)}${k.programKhusus?' (khusus '+escapeHtml(k.programKhusus)+')':''}${alasanLibur(k.nama, absTanggal)?' - LIBUR':''}</option>`).join('')}
       </select>
       <label>Tanggal</label>
       <input type="date" value="${absTanggal}" onchange="absTanggal=this.value; renderAbsensiPage()">
       ${kegAktif && kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${kegAktif.programKhusus}.</p>` : ''}
-      ${kegHafalanMurojaah ? `<p class="muted">Hadir otomatis terisi saat hafalan/murojaah diinput di tab Hafalan. Di sini cukup tandai santri yang <b>tidak</b> hadir (Sakit/Izin/Alpha).</p>` : ''}
+      ${liburKet ? bannerLibur(kegAktif.nama, absTanggal) : `${kegHafalanMurojaah ? `<p class="muted">Hadir otomatis terisi saat hafalan/murojaah diinput di tab Hafalan. Di sini cukup tandai santri yang <b>tidak</b> hadir (Sakit/Izin/Alpha).</p>` : ''}
       <div class="btn-row" style="margin-top:8px">
         ${kegHafalanMurojaah ? '' : `<button class="btn btn-accent" onclick="openAbsensiScanner()">&#128247; Scan QR Kartu Santri</button>`}
         <button class="btn" onclick="tandaiSisanyaAlpha()">Tandai Sisanya Alpha</button>
-      </div>
+      </div>`}
     </div>
     <div class="card">
       <input type="text" placeholder="Cari nama santri&hellip;" value="${escapeHtml(absSearch)}"
@@ -1286,7 +1334,7 @@ function renderAbsensiPage(){
       </div>
     </div>
     <div class="card">
-      ${tampil.length===0?'<p class="muted">Tidak ada santri yang cocok dengan filter/pencarian ini.</p>':tampil.map(({s, st})=>{
+      ${tampil.length===0?(liburKet ? '<p class="muted">Libur &mdash; tidak ada absensi untuk kegiatan ini pada tanggal ini.</p>' : '<p class="muted">Tidak ada santri yang cocok dengan filter/pencarian ini.</p>'):tampil.map(({s, st})=>{
         return `<div class="att-row">
           <span>${escapeHtml(s.nama)}</span>
           <div class="att-opts">
@@ -1307,6 +1355,7 @@ function renderAbsensiPage(){
   `;
 }
 async function setAbsensi(santriId, status){
+  { const k = DB.kegiatan.find(x=>x.id===absKegiatanId); if(k && blokirJikaLibur(k.nama, absTanggal)) return; }
   /* Snapshot kegiatan+tanggal SAAT tombol ditekan (bukan baca variabel
      global lagi di dalam fungsi async) -- supaya kalau pembina sempat
      ganti dropdown/tanggal sebelum request ini selesai, data tetap
@@ -1346,6 +1395,7 @@ async function setAbsensi(santriId, status){
    Santri yang sudah H atau I tidak diubah. Setelah ini pembina tinggal
    pakai filter "Alpha" lalu tap tombol I untuk yang ternyata izin/sakit. */
 async function tandaiSisanyaAlpha(){
+  { const k = DB.kegiatan.find(x=>x.id===absKegiatanId); if(k && blokirJikaLibur(k.nama, absTanggal)) return; }
   /* Snapshot juga di sini, sama seperti di setAbsensi(), supaya konsisten
      dipakai baik untuk query maupun untuk menandai DB lokal di bawah. */
   const kegiatanId = absKegiatanId, tanggal = absTanggal;
@@ -1397,6 +1447,7 @@ let absScanProcessing = false;
 
 function openAbsensiScanner(){
   if(!absKegiatanId){ alert('Pilih kegiatan terlebih dahulu.'); return; }
+  { const k = DB.kegiatan.find(x=>x.id===absKegiatanId); if(k && blokirJikaLibur(k.nama, absTanggal)) return; }
   if(typeof Html5Qrcode === 'undefined'){
     alert('Fitur scan QR belum siap dimuat. Pastikan HP terhubung internet lalu coba lagi.');
     return;
@@ -1691,10 +1742,11 @@ function renderHafalanPage(){
   const jenis = jenisKegiatanHafalan(kegAktif.nama); // 'tambah' | 'ulang' | 'idad'
   const isSetoran1 = kegAktif.nama.trim().toLowerCase() === 'setoran 1';
   const isHariIni = hafTanggal === todayStr();
+  const liburKet = alasanLibur(kegAktif.nama, hafTanggal);
   const programs = jenis === 'idad' ? ["Idad"] : ['Takhossus', 'Non-Takhossus'];
   /* Santri yang sudah diinput pada tanggal terpilih untuk kegiatan aktif
      digeser ke bawah daftar (urutan sisanya tetap seperti semula -- sort stabil). */
-  const santri = filteredHafalanSantri()
+  const santri = (liburKet ? [] : filteredHafalanSantri())
     .map(s=>({ s, sudah: sudahInputHafalanHariIni(s.id, hafKegiatanId), haid: isSetoran1 && santriSedangHaidHariIni(s.id) }))
     .sort((a,b)=> (a.sudah===b.sudah) ? 0 : (a.sudah ? 1 : -1));
 
@@ -1707,11 +1759,12 @@ function renderHafalanPage(){
     <div class="card">
       <label>Kegiatan</label>
       <select onchange="hafKegiatanId=this.value; renderHafalanPage()">
-        ${listKeg.map(k=>`<option value="${k.id}" ${k.id===hafKegiatanId?'selected':''}>${escapeHtml(k.nama)}</option>`).join('')}
+        ${listKeg.map(k=>`<option value="${k.id}" ${k.id===hafKegiatanId?'selected':''}>${escapeHtml(k.nama)}${alasanLibur(k.nama, hafTanggal)?' - LIBUR':''}</option>`).join('')}
       </select>
       <label>Tanggal</label>
       <input type="date" value="${hafTanggal}" onchange="hafTanggal=this.value; renderHafalanPage()">
       <p class="muted" style="margin:6px 0 0">${subheading}</p>
+      ${bannerLibur(kegAktif.nama, hafTanggal)}
       ${kegAktif.programKhusus ? `<p class="muted">Hanya menampilkan santri program ${escapeHtml(programLabel(kegAktif.programKhusus))}.</p>` : ''}
     </div>
     <div class="hafalan-toolbar">
@@ -1728,7 +1781,7 @@ function renderHafalanPage(){
       <button class="icon-btn-square" onclick="openHafalanScanner()" title="Scan QR Kartu Santri" aria-label="Scan QR Kartu Santri">&#128247;</button>
     </div>
     <div class="card">
-      ${santri.length===0?'<p class="muted">Tidak ada santri yang cocok.</p>':santri.map(({s, sudah, haid})=>{
+      ${santri.length===0?(liburKet ? '<p class="muted">Libur &mdash; tidak ada setoran/murojaah pada tanggal ini.</p>' : '<p class="muted">Tidak ada santri yang cocok.</p>'):santri.map(({s, sudah, haid})=>{
         const t = totalHafalanSantri(s.id);
         let sub;
         if(jenis==='idad'){
@@ -1770,6 +1823,7 @@ function renderHafalanPage(){
    Mengulang Hafalan (format 1/1/2/1/4 Juz seperti Murojaah). */
 function openHafalanInputForm(santriId){
   const keg = DB.kegiatan.find(k=>k.id===hafKegiatanId);
+  if(keg && blokirJikaLibur(keg.nama, hafTanggal)) return;
   const jenis = jenisKegiatanHafalan(keg && keg.nama);
   const namaKeg = (keg && keg.nama || '').trim().toLowerCase();
   if(namaKeg === 'setoran 1'){
@@ -1810,6 +1864,7 @@ function openMurojaahUlangDariSetoran1(santriId, kegiatanId, haid){
    -> lanjut ke halaman berikutnya seperti biasa; Ulang -> sesi berikutnya
    mengulang halaman yang sama (lihat juzSekarang()). */
 function openHafalanForm(santriId, kegiatanId){
+  { const k = DB.kegiatan.find(x=>x.id===kegiatanId); if(k && blokirJikaLibur(k.nama, hafTanggal)) return; }
   const s = DB.santri.find(x=>x.id===santriId);
   const keg = DB.kegiatan.find(k=>k.id===kegiatanId);
   const cur = juzSekarang(santriId);
@@ -1865,7 +1920,7 @@ async function saveHafalan(santriId, kegiatanId){
     keterangan, dicatat_oleh: SESSION.nama || SESSION.email
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
+  /* Absen Hadir otomatis kini dibuat oleh database (trigger trg_tandai_hadir_* di Supabase), tidak lagi lewat request tambahan dari aplikasi. */
   if(keterangan !== 'Ulang' && sampai >= 20 && setoran1({ kegiatanId })){
     /* Tes Kenaikan Juz hanya dibuat dari Setoran 1, TIDAK dari Setoran Bin Nadhor. */
     await buatTesKenaikanJuzJikaPerlu(santriId, juz, tanggal);
@@ -2011,7 +2066,7 @@ async function saveIdad(santriId, kegiatanId){
     metode, catatan: catatan || null, dicatat_oleh: SESSION.nama || SESSION.email
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
+  /* Absen Hadir otomatis kini dibuat oleh database (trigger trg_tandai_hadir_* di Supabase), tidak lagi lewat request tambahan dari aplikasi. */
   await loadAll();
   closeModal();
   renderHafalanPage();
@@ -2021,6 +2076,7 @@ async function saveIdad(santriId, kegiatanId){
    opts.presetJumlah & opts.catatanHaid dipakai saat form ini dibuka sebagai
    pengganti Setoran 1 untuk santri yang sedang haid (lihat openHafalanInputForm). */
 function openMurojaahForm(santriId, kegiatanId, opts){
+  { const k = DB.kegiatan.find(x=>x.id===kegiatanId); if(k && blokirJikaLibur(k.nama, hafTanggal)) return; }
   opts = opts || {};
   const s = DB.santri.find(x=>x.id===santriId);
   const keg = DB.kegiatan.find(k=>k.id===kegiatanId);
@@ -2076,7 +2132,7 @@ async function saveMurojaah(santriId, kegiatanId){
     keterangan: val('m_keterangan'), dicatat_oleh: SESSION.nama || SESSION.email
   });
   if(error){ alert('Gagal menyimpan: ' + error.message); return; }
-  await tandaiHadirOtomatis(santriId, kegiatanId, tanggal);
+  /* Absen Hadir otomatis kini dibuat oleh database (trigger trg_tandai_hadir_* di Supabase), tidak lagi lewat request tambahan dari aplikasi. */
   await loadAll();
   closeModal();
   renderHafalanPage();
@@ -2089,6 +2145,7 @@ let hafScanBusy = false;
 let hafLastScan = { text: '', time: 0 };
 
 function openHafalanScanner(){
+  { const k = DB.kegiatan.find(x=>x.id===hafKegiatanId); if(k && blokirJikaLibur(k.nama, hafTanggal)) return; }
   if(typeof Html5Qrcode === 'undefined'){
     alert('Fitur scan QR belum siap dimuat. Pastikan HP terhubung internet lalu coba lagi.');
     return;

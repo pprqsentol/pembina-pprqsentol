@@ -1,4 +1,4 @@
-const CACHE = 'pembina-rq-v15-hemat-log';
+const CACHE = 'pembina-rq-v19-hadir-trigger';
 const FILES = [
   './',
   './index.html',
